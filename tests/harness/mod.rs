@@ -30,6 +30,9 @@ pub const ENV_BUS: &str = "MURMUR_NESTED_BUS";
 pub const ENV_OUTER_BUS: &str = "MURMUR_OUTER_BUS";
 pub const ENV_PAD: &str = "MURMUR_NESTED_PAD";
 
+/// `connectToEIS` capability bit for a keyboard (same as the portal's `DeviceType::KEYBOARD`).
+const KWIN_EIS_KEYBOARD: i32 = 1;
+
 /// A running nested KWin session. Everything is torn down on drop.
 pub struct Nested {
     pub dir: PathBuf,
@@ -554,7 +557,7 @@ impl RawKeyboard {
                 "/org/kde/KWin/EIS/RemoteDesktop",
                 Some("org.kde.KWin.EIS.RemoteDesktop"),
                 "connectToEIS",
-                &(1i32,),
+                &(KWIN_EIS_KEYBOARD,),
             )
             .await
             .expect("connectToEIS");

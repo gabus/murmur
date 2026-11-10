@@ -2,10 +2,14 @@
 //! connection, queues text, and types each queued string as one burst once the compositor's
 //! state is confirmed fresh by a `sync` round trip.
 
-use std::collections::VecDeque;
+use std::{collections::VecDeque, time::Duration};
 
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, trace, warn};
+
+/// After every `Output` handle is dropped, how long queued text may still wait (for a held
+/// modifier to be released or a paused device to resume) before it is dropped.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
 use super::{
     EisSource, OutputEvent,
@@ -28,7 +32,7 @@ enum Phase {
     Syncing,
     /// The `sync` completed; the state is current.
     Fresh,
-    /// Control/Alt/Super is held: wait for a modifiers event.
+    /// The user holds a modifier (Ctrl/Alt/Super, or Shift/AltGr): wait for a modifiers event.
     Held,
 }
 
@@ -41,7 +45,8 @@ struct Actor {
     source: EisSource,
     events: mpsc::UnboundedSender<OutputEvent>,
     rx: mpsc::UnboundedReceiver<Cmd>,
-    rx_closed: bool,
+    /// Set once every `Output` handle is gone: leftover text may wait until then.
+    shutdown_deadline: Option<tokio::time::Instant>,
     queue: VecDeque<Cmd>,
     link: Option<Link>,
     phase: Phase,
@@ -54,6 +59,7 @@ struct Actor {
 enum Wake {
     Cmd(Option<Cmd>),
     Eis(super::eis::RawEvent),
+    GraceOver,
 }
 
 pub(super) async fn run(
@@ -65,7 +71,7 @@ pub(super) async fn run(
         source,
         events,
         rx,
-        rx_closed: false,
+        shutdown_deadline: None,
         queue: VecDeque::new(),
         link: None,
         phase: Phase::Stale,
@@ -80,29 +86,43 @@ impl Actor {
     async fn run(&mut self) {
         loop {
             self.pump().await;
-            if self.rx_closed && self.queue.is_empty() {
+            if self.shutdown_deadline.is_some() && self.queue.is_empty() {
                 break;
             }
             if self.link.is_none() && self.has_text() {
-                // Lazy reconnect: text is waiting.
-                self.connect().await;
+                if self.shutdown_deadline.is_some() {
+                    // Shutting down: don't open a new session (or dialog) for leftovers.
+                    self.drop_pending();
+                } else {
+                    // Lazy reconnect: text is waiting.
+                    self.connect().await;
+                }
                 continue;
             }
-            let wake = match (&mut self.link, self.rx_closed) {
-                (Some(link), false) => tokio::select! {
+            let wake = match (&mut self.link, self.shutdown_deadline) {
+                (Some(link), None) => tokio::select! {
                     cmd = self.rx.recv() => Wake::Cmd(cmd),
                     raw = link.conn.next_raw() => Wake::Eis(raw),
                 },
-                (Some(link), true) => Wake::Eis(link.conn.next_raw().await),
-                (None, false) => Wake::Cmd(self.rx.recv().await),
-                // Unreachable: closed with an empty queue breaks above, and queued text
-                // without a link reconnects above. Flushes alone were resolved by `pump`.
-                (None, true) => break,
+                (Some(link), Some(deadline)) => tokio::select! {
+                    raw = link.conn.next_raw() => Wake::Eis(raw),
+                    _ = tokio::time::sleep_until(deadline) => Wake::GraceOver,
+                },
+                (None, None) => Wake::Cmd(self.rx.recv().await),
+                // Unreachable: closed with an empty queue breaks above, and leftover text
+                // without a link is dropped above. Flushes alone were resolved by `pump`.
+                (None, Some(_)) => break,
             };
             match wake {
                 Wake::Cmd(Some(cmd)) => self.queue.push_back(cmd),
-                Wake::Cmd(None) => self.rx_closed = true,
+                Wake::Cmd(None) => {
+                    self.shutdown_deadline = Some(tokio::time::Instant::now() + SHUTDOWN_GRACE);
+                }
                 Wake::Eis(raw) => self.on_eis(raw).await,
+                Wake::GraceOver => {
+                    debug!("output dropped while text was still waiting; giving up");
+                    self.drop_pending();
+                }
             }
         }
         if let Some(link) = self.link.take() {
@@ -130,6 +150,7 @@ impl Actor {
                     Err(match e {
                         EisError::Unsupported(why) => OutputEvent::Unavailable(why),
                         EisError::Lost(why) => OutputEvent::Disconnected(why),
+                        EisError::Handshake(e) => OutputEvent::Disconnected(error_chain(&e)),
                     })
                 }
             },
@@ -254,8 +275,13 @@ impl Actor {
                 }
                 Phase::Fresh => {}
             }
+            // Checked right after the round trip, while murmur holds no keys itself.
             if table.blocks_typing(&mods) {
-                debug!("Ctrl/Alt/Super held: holding text until released");
+                debug!(
+                    depressed = mods.depressed,
+                    latched = mods.latched,
+                    "modifier held: holding text until it is released"
+                );
                 self.phase = Phase::Held;
                 return;
             }
@@ -273,11 +299,10 @@ impl Actor {
                     group = mods.group,
                     "skipped characters missing from the active layout"
                 );
-            }
-            let unmapped = plan.unmapped;
-            if unmapped > 0 {
                 // Field access, not `emit`: `link` still borrows `self.link`.
-                let _ = self.events.send(OutputEvent::Unmapped { count: unmapped });
+                let _ = self.events.send(OutputEvent::Unmapped {
+                    count: plan.unmapped,
+                });
             }
             if plan.events.is_empty() {
                 continue; // Nothing typeable; the state is still fresh.
@@ -294,4 +319,16 @@ impl Actor {
             }
         }
     }
+}
+
+/// `error: source: source…`, for messages that cross into [`OutputEvent`].
+fn error_chain(e: &dyn std::error::Error) -> String {
+    let mut text = e.to_string();
+    let mut source = e.source();
+    while let Some(s) = source {
+        text.push_str(": ");
+        text.push_str(&s.to_string());
+        source = s.source();
+    }
+    text
 }

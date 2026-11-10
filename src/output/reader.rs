@@ -86,33 +86,43 @@ impl EiSocket {
         }
     }
 
-    /// Runs the client side of the EI handshake.
+    /// Runs the client side of the EI handshake (reis' sync `EiHandshaker`).
     pub(crate) async fn handshake(
         &self,
         name: &str,
-    ) -> Result<reis::handshake::HandshakeResp, String> {
+    ) -> Result<reis::handshake::HandshakeResp, HandshakeError> {
         let mut handshaker =
             reis::handshake::EiHandshaker::new(name, ei::handshake::ContextType::Sender);
         loop {
-            match self.next().await {
-                Some(Ok(PendingRequestResult::Request(event))) => {
-                    match handshaker.handle_event(event) {
-                        Ok(Some(resp)) => return Ok(resp),
-                        Ok(None) => {}
-                        Err(e) => return Err(format!("EI handshake: {e}")),
-                    }
-                }
-                Some(Ok(PendingRequestResult::ParseError(e))) => {
-                    return Err(format!("EI handshake: {e}"));
-                }
+            let event = match self.next().await {
+                Some(Ok(PendingRequestResult::Request(event))) => event,
+                Some(Ok(PendingRequestResult::ParseError(e))) => return Err(e.into()),
                 Some(Ok(PendingRequestResult::InvalidObject(id))) => {
-                    return Err(format!("EI handshake: invalid object {id}"));
+                    return Err(HandshakeError::InvalidObject(id));
                 }
-                Some(Err(e)) => return Err(format!("EI handshake: {e}")),
-                None => return Err("EI handshake: connection closed".into()),
+                Some(Err(e)) => return Err(e.into()),
+                None => return Err(HandshakeError::Closed),
+            };
+            if let Some(resp) = handshaker.handle_event(event)? {
+                return Ok(resp);
             }
         }
     }
+}
+
+/// Why the EI handshake failed.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum HandshakeError {
+    #[error("EI handshake I/O error")]
+    Io(#[from] io::Error),
+    #[error("EI handshake message could not be parsed")]
+    Parse(#[from] reis::ParseError),
+    #[error("EI handshake protocol error")]
+    Protocol(#[from] reis::handshake::HandshakeError),
+    #[error("EI handshake referenced unknown object {0}")]
+    InvalidObject(u64),
+    #[error("EIS closed the connection during the handshake")]
+    Closed,
 }
 
 #[cfg(test)]

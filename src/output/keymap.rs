@@ -102,6 +102,9 @@ pub struct KeyTable {
     /// Control, Mod1 (Alt) and Mod4 (Super): while any is held, typed letters would become
     /// shortcuts.
     blocking_mask: u32,
+    /// Shift and Mod5 (Level3): murmur presses these itself, so one the user holds would
+    /// change the characters.
+    level_mask: u32,
     /// See [`KeyTable::probe_key`].
     probe_key: Option<u32>,
 }
@@ -149,6 +152,8 @@ impl KeyTable {
             groups,
             lock_mask,
             blocking_mask,
+            level_mask: mod_mask(keymap, xkb::MOD_NAME_SHIFT)
+                | mod_mask(keymap, xkb::MOD_NAME_ISO_LEVEL3_SHIFT),
             probe_key: probe_key(keymap, blocking_mask),
         }
     }
@@ -166,16 +171,24 @@ impl KeyTable {
         self.probe_key
     }
 
-    /// `true` while Control, Alt or Super is held: typing now would trigger shortcuts.
-    /// Shift, Lock and Level3 don't count, because murmur handles those itself.
+    /// `true` while typing now would go wrong: Control, Alt or Super is held or latched
+    /// (letters would become shortcuts), or the user holds Shift or AltGr (letters would change
+    /// case or level).
+    ///
+    /// Only meaningful while murmur itself holds no keys, i.e. between bursts after a `sync`
+    /// round trip; the compositor's modifier events also echo murmur's own Shift/AltGr presses.
+    /// Caps Lock doesn't block: [`KeyTable::plan`] accounts for it. A latched Shift/AltGr
+    /// (sticky keys) doesn't block either, since it would only clear with the next key press.
     pub fn blocks_typing(&self, mods: &ModState) -> bool {
-        mods.depressed & self.blocking_mask != 0
+        mods.depressed & (self.blocking_mask | self.level_mask) != 0
+            || mods.latched & self.blocking_mask != 0
     }
 
     /// How to type `c` in the state `mods`, or `None` if the active group can't produce it.
     pub fn stroke(&self, c: char, mods: &ModState) -> Option<Stroke> {
         let group = self.groups.get(usize::try_from(mods.group).ok()?)?;
-        let caps = usize::from(mods.locked & self.lock_mask != 0);
+        let lock = (mods.depressed | mods.latched | mods.locked) & self.lock_mask;
+        let caps = usize::from(lock != 0);
         let table = &group.strokes[caps];
         let sym = xkb::Keysym::from_char(c).raw();
         // Keymaps may also spell a character as a Unicode keysym (U+0105 instead of `aogonek`).
@@ -500,23 +513,43 @@ mod tests {
     }
 
     #[test]
-    fn held_ctrl_alt_super_block_but_shift_and_altgr_do_not() {
+    fn held_modifiers_block_typing_but_caps_lock_does_not() {
         let km = keymap("de");
         let t = KeyTable::new(&km);
+        let bit = |name| 1 << km.mod_get_index(name);
         let held = |name| ModState {
-            depressed: 1 << km.mod_get_index(name),
+            depressed: bit(name),
             ..ModState::default()
         };
-        for name in [xkb::MOD_NAME_CTRL, xkb::MOD_NAME_ALT, xkb::MOD_NAME_LOGO] {
-            assert!(t.blocks_typing(&held(name)), "{name} should block");
+        let latched = |name| ModState {
+            latched: bit(name),
+            ..ModState::default()
+        };
+        let shortcut = [xkb::MOD_NAME_CTRL, xkb::MOD_NAME_ALT, xkb::MOD_NAME_LOGO];
+        for name in shortcut {
+            assert!(t.blocks_typing(&held(name)), "held {name} should block");
+            assert!(
+                t.blocks_typing(&latched(name)),
+                "latched {name} should block"
+            );
         }
-        for name in [
-            xkb::MOD_NAME_SHIFT,
-            xkb::MOD_NAME_CAPS,
-            xkb::MOD_NAME_ISO_LEVEL3_SHIFT,
-        ] {
-            assert!(!t.blocks_typing(&held(name)), "{name} should not block");
+        // The user's own Shift/AltGr would change the typed characters.
+        for name in [xkb::MOD_NAME_SHIFT, xkb::MOD_NAME_ISO_LEVEL3_SHIFT] {
+            assert!(t.blocks_typing(&held(name)), "held {name} should block");
+            assert!(
+                !t.blocks_typing(&latched(name)),
+                "latched {name} clears only on a key"
+            );
         }
+        let caps = ModState {
+            depressed: bit(xkb::MOD_NAME_CAPS),
+            locked: bit(xkb::MOD_NAME_CAPS),
+            ..ModState::default()
+        };
+        assert!(
+            !t.blocks_typing(&caps),
+            "Caps Lock is planned for, not waited out"
+        );
     }
 
     #[test]

@@ -25,6 +25,7 @@ use tokio::sync::mpsc;
 // Evdev keycodes (linux/input-event-codes.h).
 const KEY_LEFTCTRL: u32 = 29;
 const KEY_CAPSLOCK: u32 = 58;
+const KEY_LEFTSHIFT: u32 = 42;
 const SENTENCE: &str = "The Quick Brown Fox? Hello, World! (ok) \"quoted\" 123 ";
 const WAIT: Duration = Duration::from_secs(5);
 
@@ -148,6 +149,24 @@ async fn nested_kwin_scenarios() {
         .await
         .expect("held text typed after Ctrl was released");
     want += "held back ";
+    pad.expect(&want, WAIT).await;
+
+    // 4b. Same for a Shift the user holds (e.g. typing a capital): it would change the case.
+    kb.key(KEY_LEFTSHIFT, true).await;
+    kb.wait_mods("Shift down", |depressed| depressed != 0).await;
+    out.type_text("quiet ".into());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(800), out.flush())
+            .await
+            .is_err(),
+        "text was typed while Shift was held"
+    );
+    assert_eq!(pad.text(), want, "nothing may be typed while Shift is held");
+    kb.key(KEY_LEFTSHIFT, false).await;
+    tokio::time::timeout(WAIT, out.flush())
+        .await
+        .expect("held text typed after Shift was released");
+    want += "quiet ";
     pad.expect(&want, WAIT).await;
 
     // 5. Keymap change: KWin replaces the EIS keyboard device. The new keymap is used, and the

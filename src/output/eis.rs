@@ -13,7 +13,7 @@ use tracing::{debug, trace, warn};
 pub(crate) use super::reader::RawEvent;
 use super::{
     keymap::{KeyEvent, KeyTable, ModState},
-    reader::EiSocket,
+    reader::{EiSocket, HandshakeError},
 };
 
 /// Name murmur announces in the EI handshake.
@@ -32,6 +32,9 @@ pub(crate) enum EisError {
     /// I/O, protocol or timeout problem. Worth retrying later.
     #[error("{0}")]
     Lost(String),
+    /// The EI handshake failed. Worth retrying later.
+    #[error(transparent)]
+    Handshake(#[from] HandshakeError),
 }
 
 /// What a handled event changed, as far as typing is concerned.
@@ -43,7 +46,8 @@ pub(crate) enum Update {
     Synced,
     /// The keyboard's modifier or layout state changed.
     Modifiers,
-    /// The keyboard became usable, or stopped being usable.
+    /// The active keyboard changed: one became usable, stopped being usable (paused or
+    /// removed), or was replaced by a newer device (keymap change).
     Readiness,
     /// The connection is gone.
     Lost(String),
@@ -57,6 +61,8 @@ struct Seat {
 
 #[derive(Default)]
 struct DeviceState {
+    /// Announcement order; a newer device carries the newer keymap.
+    added: u64,
     name: Option<String>,
     keyboard: Option<ei::Keyboard>,
     keymap: Option<(OwnedFd, u32)>,
@@ -88,6 +94,11 @@ pub(crate) struct EisConnection {
     sequence: u32,
     seats: HashMap<ei::Seat, Seat>,
     devices: HashMap<ei::Device, DeviceState>,
+    /// Counter for `DeviceState::added`.
+    devices_added: u64,
+    /// The usable keyboard murmur types on: the most recently added one, which has the
+    /// newest keymap.
+    active: Option<ei::Device>,
     /// The `sync` whose `done` the typing logic is waiting for.
     pending_sync: Option<ei::Callback>,
     /// Whether any seat offered `ei_keyboard`, once a seat has been announced completely.
@@ -104,8 +115,7 @@ impl EisConnection {
             .map_err(|e| EisError::Lost(format!("EIS socket: {e}")))?;
         let resp = tokio::time::timeout(HANDSHAKE_TIMEOUT, socket.handshake(CLIENT_NAME))
             .await
-            .map_err(|_| EisError::Lost("EI handshake timed out".into()))?
-            .map_err(EisError::Lost)?;
+            .map_err(|_| EisError::Lost("EI handshake timed out".into()))??;
         debug!(interfaces = ?resp.negotiated_interfaces, "EI handshake done");
         if !resp.negotiated_interfaces.contains_key(ei::Keyboard::NAME) {
             return Err(EisError::Unsupported(
@@ -120,6 +130,8 @@ impl EisConnection {
             sequence: 0,
             seats: HashMap::new(),
             devices: HashMap::new(),
+            devices_added: 0,
+            active: None,
             pending_sync: None,
             keyboard_offered: None,
             keymap_error: None,
@@ -151,7 +163,7 @@ impl EisConnection {
             if let Update::Lost(why) = self.handle(raw).await {
                 return Err(EisError::Lost(why));
             }
-            if self.usable().is_some() {
+            if self.active.is_some() {
                 return Ok(());
             }
         }
@@ -178,12 +190,26 @@ impl EisConnection {
             }
             Some(Ok(PendingRequestResult::Request(event))) => event,
         };
-        let was_usable = self.usable().is_some();
         let update = self.apply(event).await;
-        if update == Update::None && was_usable != self.usable().is_some() {
+        if self.reselect() && update == Update::None {
             return Update::Readiness;
         }
         update
+    }
+
+    /// Points `active` at the most recently added usable keyboard. Returns whether it changed.
+    fn reselect(&mut self) -> bool {
+        let best = self
+            .devices
+            .iter()
+            .filter(|(_, d)| d.usable())
+            .max_by_key(|(_, d)| d.added)
+            .map(|(dev, _)| dev.clone());
+        if best == self.active {
+            return false;
+        }
+        self.active = best;
+        true
     }
 
     async fn apply(&mut self, event: ei::Event) -> Update {
@@ -252,11 +278,17 @@ impl EisConnection {
                 }
             }
             ei::seat::Event::Device { device } => {
-                self.devices.insert(device, DeviceState::default());
+                self.devices_added += 1;
+                let state = DeviceState {
+                    added: self.devices_added,
+                    ..DeviceState::default()
+                };
+                self.devices.insert(device, state);
             }
             ei::seat::Event::Destroyed { serial } => {
                 self.last_serial = serial;
                 self.seats.remove(&seat);
+                forget(&seat);
             }
             _ => {}
         }
@@ -322,7 +354,11 @@ impl EisConnection {
                 self.last_serial = serial;
                 if let Some(d) = self.devices.remove(&device) {
                     debug!(device = d.name.as_deref().unwrap_or("?"), "device removed");
+                    if let Some(kb) = &d.keyboard {
+                        forget(kb);
+                    }
                 }
+                forget(&device);
             }
             ei::device::Event::StartEmulating { serial, .. }
             | ei::device::Event::StopEmulating { serial }
@@ -371,19 +407,16 @@ impl EisConnection {
                 if let Some(d) = device {
                     d.keyboard = None;
                 }
+                forget(keyboard);
             }
             _ => {}
         }
         Update::None
     }
 
-    fn usable(&self) -> Option<&DeviceState> {
-        self.devices.values().find(|d| d.usable())
-    }
-
-    /// The usable keyboard's keymap table and modifier state, if there is one.
+    /// The active keyboard's keymap table and modifier state, if there is one.
     pub(crate) fn keyboard(&self) -> Option<(&KeyTable, ModState)> {
-        let d = self.usable()?;
+        let d = self.devices.get(self.active.as_ref()?)?;
         Some((d.table.as_ref()?, d.mods))
     }
 
@@ -404,7 +437,11 @@ impl EisConnection {
     /// every group) once per device, which makes the compositor report the full state. The
     /// caller's next `sync` round trip then waits for that report.
     pub(crate) async fn learn_modifiers(&mut self) -> io::Result<()> {
-        let Some(d) = self.devices.values_mut().find(|d| d.usable()) else {
+        let Some(d) = self
+            .active
+            .as_ref()
+            .and_then(|dev| self.devices.get_mut(dev))
+        else {
             return Ok(());
         };
         if d.mods_seen || d.probed {
@@ -426,14 +463,12 @@ impl EisConnection {
         self.burst(&tap).await
     }
 
-    /// Sends `events` as one emulation burst on the usable keyboard and flushes once.
+    /// Sends `events` as one emulation burst on the active keyboard and flushes once.
     pub(crate) async fn burst(&mut self, events: &[KeyEvent]) -> io::Result<()> {
-        let Some((device, kb)) = self
-            .devices
-            .iter()
-            .find(|(_, d)| d.usable())
-            .and_then(|(dev, d)| Some((dev.clone(), d.keyboard.clone()?)))
-        else {
+        let Some((device, kb)) = self.active.clone().and_then(|dev| {
+            let kb = self.devices.get(&dev)?.keyboard.clone()?;
+            Some((dev, kb))
+        }) else {
             return Err(io::Error::new(io::ErrorKind::NotConnected, "no keyboard"));
         };
         let serial = self.last_serial;
@@ -461,9 +496,10 @@ impl EisConnection {
     }
 }
 
-/// Forgets a client-side object the server has destroyed, so reis doesn't keep it forever.
-fn forget(callback: &ei::Callback) {
-    let object = callback.as_object();
+/// Forgets an object the server has destroyed (reis doesn't on destructor events), so a
+/// long-lived connection doesn't accumulate them.
+fn forget(proxy: &impl Interface) {
+    let object = proxy.as_object();
     if let Some(backend) = object.backend() {
         backend.remove_id(object.id());
     }

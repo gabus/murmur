@@ -144,14 +144,28 @@ async fn start_portal_session(
         .start(session, None, StartOptions::default())
         .await
         .and_then(|r| r.response())
-        .map_err(portal_error)?;
-    if !started.devices().contains(DeviceType::KEYBOARD) {
-        return Err(SourceError::PermissionDenied);
-    }
-    // Tokens are single-use: always keep the newest one.
-    if let Some(new_token) = started.restore_token()
-        && let Err(e) = write_token(token_path.to_owned(), new_token.to_owned()).await
-    {
+        .map_err(portal_error);
+    let started = match started {
+        Ok(s) if s.devices().contains(DeviceType::KEYBOARD) => s,
+        Ok(_) | Err(SourceError::PermissionDenied) => {
+            // The token (if any) didn't grant typing; don't offer it again.
+            if token.is_some() {
+                remove_token(token_path.to_owned()).await;
+            }
+            return Err(SourceError::PermissionDenied);
+        }
+        Err(e) => return Err(e),
+    };
+    // Tokens are single-use: keep the newest one, or none if the portal returned none.
+    let saved = match started.restore_token() {
+        Some(new_token) => write_token(token_path.to_owned(), new_token.to_owned()).await,
+        None => {
+            debug!("the portal returned no restore token");
+            remove_token(token_path.to_owned()).await;
+            Ok(())
+        }
+    };
+    if let Err(e) = saved {
         warn!("cannot save the RemoteDesktop restore token: {e}");
     }
     portal
@@ -214,6 +228,17 @@ async fn read_token(path: PathBuf) -> Option<String> {
             warn!("restore token read task failed: {e}");
             None
         }
+    }
+}
+
+/// Deletes a used-up token, so it isn't sent again.
+async fn remove_token(path: PathBuf) {
+    let removed = tokio::task::spawn_blocking(move || std::fs::remove_file(path)).await;
+    match removed {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) if e.kind() == io::ErrorKind::NotFound => {}
+        Ok(Err(e)) => warn!("cannot remove the RemoteDesktop restore token: {e}"),
+        Err(e) => warn!("restore token removal task failed: {e}"),
     }
 }
 
