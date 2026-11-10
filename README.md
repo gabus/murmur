@@ -299,8 +299,7 @@ $T cargo run --example ui_shots -- /tmp/shots                                # w
 $T flatpak/update-cargo-sources.sh
 
 # Flatpak (from the host): offline, everything from source
-flatpak run org.flatpak.Builder --user --install --force-clean --sandbox \
-  --state-dir=.flatpak-builder build-dir io.github.gabus.Murmur.yml
+flatpak/install-local.sh    # builds into ./repo, installs from the "murmur-local" remote
 flatpak run io.github.gabus.Murmur
 ```
 

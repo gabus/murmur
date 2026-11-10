@@ -60,8 +60,8 @@
   </supports>
 
   <branding>
-    <color type="primary" scheme_preference="light">#f3b6b6</color>
-    <color type="primary" scheme_preference="dark">#7a1f1f</color>
+    <color type="primary" scheme_preference="light">#c4ebe8</color>
+    <color type="primary" scheme_preference="dark">#0f3a47</color>
   </branding>
 
   <content_rating type="oars-1.1"/>

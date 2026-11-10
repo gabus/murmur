@@ -63,6 +63,7 @@ jobs:
           Branch=$BRANCH
           Title=Murmur
           Url=$PAGES_URL/repo/
+          SuggestRemoteName=murmur
           RuntimeRepo=https://dl.flathub.org/repo/flathub.flatpakrepo
           IsRuntime=false
           GPGKey=$GPG_PUB
@@ -81,7 +82,7 @@ jobs:
           <!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width">
           <title>Murmur</title>
           <style>body{font:16px/1.5 system-ui,sans-serif;max-width:40rem;margin:3rem auto;padding:0 1rem}
-          a.button{display:inline-block;padding:.6rem 1.2rem;background:#3584e4;color:#fff;border-radius:.4rem;text-decoration:none}
+          a.button{display:inline-block;padding:.6rem 1.2rem;background:#2563eb;color:#fff;border-radius:.4rem;text-decoration:none}
           code{background:#8882;padding:.1rem .3rem;border-radius:.2rem}</style>
           <img src="icon.svg" width="64" alt="">
           <h1>Murmur</h1>

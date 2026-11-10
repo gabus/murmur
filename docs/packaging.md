@@ -100,6 +100,26 @@ unset, so no portals, no tray host and nothing can be typed):
 
 Not tested: aarch64, the CI workflow (written, not run), GNOME.
 
+## Store data: why the remote must be a normal one
+
+Discover and GNOME Software take an app's description, license and branding from the
+**remote's AppStream branch**, not from the installed files. A refresh (`flatpak update
+--appstream`, which the stores also run) only covers normal remotes. Remotes marked
+`no-enumerate` are skipped.
+
+Tested 2026-11-10 with Flatpak 1.18.4, in throwaway `FLATPAK_USER_DIR`s against a local repo
+with an AppStream branch (`flatpak build-update-repo`):
+
+| Install from | Remote created | AppStream after install | After `flatpak update --appstream` |
+|---|---|---|---|
+| `flatpak-builder --install` | `murmur-origin`, no-enumerate | none | none (Discover: no description, "License: unknown") |
+| `.flatpakref` without `SuggestRemoteName` | `murmur-origin`, no-enumerate | none | none |
+| `.flatpakref` with `SuggestRemoteName=murmur` | `murmur`, normal | none | ✅ description and license |
+
+So the release `.flatpakref` sets `SuggestRemoteName=murmur`, and local builds install from a
+normal `murmur-local` remote through `flatpak/install-local.sh`. The composed AppStream data
+was fine all along (`build-dir/files/share/app-info/xmls/`).
+
 ## Flathub: open points and risks
 
 - **Generative-AI policy (blocking).** Flathub's requirements say manifests must not contain
