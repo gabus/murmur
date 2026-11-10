@@ -108,10 +108,13 @@ model changes its mind about later stays as typed.
 murmur inserts text by sending keystrokes through the RemoteDesktop portal. That
 works in every app, but it can't be fully seamless:
 
-- **Collision.** If the user types at the same moment murmur is typing a word,
-  the characters can interleave.
-- **Held modifiers.** If Ctrl/Alt/Super is physically held while murmur types,
-  the letters act as shortcuts. The sandbox can't see the physical keyboard.
+- **Collision.** Each word is sent as one burst (under 1 ms), so the user's own keystrokes can
+  land between murmur's words but not inside them.
+- **Layout.** Characters that aren't on the active keyboard layout (e.g. `ą` while on *US*)
+  go through the clipboard fallback.
+- **Held modifiers.** If Ctrl/Alt/Super were physically held while murmur typed,
+  the letters would act as shortcuts. murmur sees the held modifiers through EIS and waits
+  until they are released before typing.
 - **No context.** murmur can't read the text around the cursor, so spacing and
   capitalization after the user's own edits are a guess.
 - **Password fields.** murmur can't detect them.
@@ -131,7 +134,7 @@ surrounding text are known, and live text can be shown underlined in the field
 | Audio | Capture the default PipeWire/Pulse source at 16 kHz mono. The stream is open **only while listening**. Optional source picker. |
 | VAD | Silero VAD for end-of-phrase detection only. Never stops listening. |
 | ASR | sherpa-onnx. Default: offline model re-run every ~0.5 s on the current sentence, committing words two runs agree on. Light: streaming transducer, greedy decoding, plus a punctuation/casing step. |
-| Output | Type text through the `org.freedesktop.portal.RemoteDesktop` portal (keyboard keysyms). Fallback: clipboard + paste. Optionally add a trailing space between phrases. |
+| Output | Type text through the `org.freedesktop.portal.RemoteDesktop` portal's EIS channel (`ConnectToEIS`, libei): key events resolved through the compositor's XKB keymap and active layout, with murmur pressing Shift/AltGr itself ([D-005](docs/decisions.md)). Words wait while the user physically holds Ctrl/Alt/Super. Fallback for characters missing from the active layout: clipboard + paste. Every typed word is followed by one space ([D-002](docs/decisions.md)). |
 | Indicator | StatusNotifierItem tray icon with idle / loading / listening / error states. While listening, the icon reacts to mic level. The menu has start/stop, model picker, settings and quit. |
 | Models | Download on demand into `$XDG_DATA_HOME/murmur/models` with checksum verification. Show size before download. Delete from menu. |
 | Resources | Idle: no audio stream, no model in memory, ~0% CPU. Unload the model after configurable idle time (default 10 min). |
@@ -155,7 +158,7 @@ punctuation, if sherpa-onnx can run them.
 
 | Desktop | Hotkey | Typing | Tray | Notes |
 |---|---|---|---|---|
-| KDE Plasma 6 | ✅ | ✅ | ✅ | Primary target |
+| KDE Plasma 6.1+ | ✅ | ✅ | ✅ | Primary target. Typing needs EIS in RemoteDesktop (6.1+); tested on 6.7 |
 | GNOME 48+ | ✅ | ✅ | ⚠️ needs AppIndicator extension | GNOME may show a "remote control" indicator while typing |
 | Hyprland | ✅ | ⚠️ to verify | ✅ (with a tray bar) | |
 | Sway / wlroots | ❌ no GlobalShortcuts portal | ⚠️ | ✅ | Unsupported |
@@ -168,6 +171,7 @@ punctuation, if sherpa-onnx can run them.
 | Async runtime | `tokio` |
 | Portals | [`ashpd`](https://crates.io/crates/ashpd): GlobalShortcuts, RemoteDesktop, Background |
 | Tray | [`ksni`](https://crates.io/crates/ksni) (StatusNotifierItem, no Qt/GTK) |
+| Setup & Settings windows | [Slint](https://slint.dev), software renderer: no GPU permission ([D-001](docs/decisions.md)) |
 | Audio | `cpal`, or `libpulse-binding` if cpal misbehaves inside the sandbox |
 | ASR + VAD | [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) via `sherpa-rs` (to evaluate) or own FFI to its C API |
 | Inference | onnxruntime (bundled by sherpa-onnx), CPU |
@@ -217,7 +221,9 @@ Nothing is installed on the host with `dnf`. Build tools live in a
 ```sh
 # dev container (one time): Rust + C++ toolchain, isolated from the host
 toolbox create murmur-dev
-toolbox run -c murmur-dev sudo dnf install -y rust cargo rustfmt clippy gcc-c++ cmake clang pkg-config
+toolbox run -c murmur-dev sudo dnf install -y rust cargo rustfmt clippy gcc-c++ cmake clang pkg-config \
+  git alsa-lib-devel pulseaudio-libs-devel libxkbcommon-devel wayland-devel fontconfig-devel \
+  python3-aiohttp python3-tomlkit   # last two: flatpak-cargo-generator
 
 # flatpak builds (one time)
 flatpak install flathub org.flatpak.Builder \

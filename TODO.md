@@ -6,19 +6,21 @@ Stages are in order. Each stage ends with something runnable.
 
 Goal: prove the two uncertain pieces before writing the real app.
 
-- [ ] Create `murmur-dev` toolbox with the Rust + C++ toolchain; install `org.flatpak.Builder` + SDK 26.08 + rust-stable from Flathub
-- [ ] Confirm portals (GlobalShortcuts, RemoteDesktop) and mic work from `cargo run` inside the toolbox
-- [ ] `cargo new` a throwaway `spike/` binary
-- [ ] GlobalShortcuts portal via `ashpd`: register a "toggle" shortcut and print on activation
-- [ ] RemoteDesktop portal via `ashpd`: request a keyboard-only session and type `hello wörld ąčę 你好`
-- [ ] Check whether `persist_mode` / `restore_token` avoids re-prompting after restart (KDE + GNOME)
-- [ ] Note any "remote control active" indicator shown by the desktop
-- [ ] Inject a phrase while physically typing: how bad is interleaving?
-- [ ] Inject a phrase while physically holding Ctrl: does it trigger shortcuts? Can sending explicit modifier-up events first prevent it safely?
-- [ ] Measure injection speed (chars/s) for a 100-char phrase
-- [ ] Wrap the spike in a minimal Flatpak manifest and confirm both portals work sandboxed
-- [ ] Test on KDE Plasma 6 (primary) and GNOME 48+ (VM is fine)
-- [ ] Write findings in `docs/portal-findings.md`, then go / no-go on the typing approach
+- [x] Create `murmur-dev` toolbox with the Rust + C++ toolchain; install `org.flatpak.Builder` + SDK 26.08 + rust-stable from Flathub
+- [x] Confirm portals (GlobalShortcuts, RemoteDesktop) and mic work from `cargo run` inside the toolbox
+- [x] `cargo new` a throwaway `spike/` binary
+- [x] GlobalShortcuts portal via `ashpd`: register a "toggle" shortcut and print on activation
+- [x] RemoteDesktop portal via `ashpd`: request a keyboard-only session and type `hello wörld ąčę 你好` (keysym path broken on KDE → EIS, see findings)
+- [ ] Check whether `persist_mode` / `restore_token` avoids re-prompting after restart (KDE ✅ + GNOME)
+- [x] Note any "remote control active" indicator shown by the desktop
+- [x] Inject a phrase while physically typing: how bad is interleaving?
+- [x] Inject a phrase while physically holding Ctrl: does it trigger shortcuts? Can sending explicit modifier-up events first prevent it safely?
+- [x] Measure injection speed (chars/s) for a 100-char phrase
+- [x] Wrap the spike in a minimal Flatpak manifest and confirm both portals work sandboxed
+- [ ] Test on KDE Plasma 6 (primary ✅) and GNOME 48+ (headless mutter in the toolbox, then VM for the portal dialog)
+- [x] Spike EIS typing (ConnectToEIS + reis + keymap-aware keycodes): works on KDE; KWin needs a `sync` poke
+- [ ] Investigate cpal PulseAudio host failing inside Flatpak (ALSA fallback works)
+- [x] Write findings in `docs/portal-findings.md`, then go / no-go on the typing approach (go: EIS, D-005)
 
 ## Stage 1: Core dictation (CLI)
 
@@ -96,7 +98,7 @@ Goal: `murmur` daemon, hotkey toggles listening, phrases get typed.
 
 ## Open questions
 
-- [ ] Does the RemoteDesktop portal remember permission across restarts on KDE / GNOME?
+- [ ] Does the RemoteDesktop portal remember permission across restarts on KDE / GNOME? (KDE: yes, see findings)
 - [ ] Does the GlobalShortcuts portal report key release (needed for hold-to-talk)?
 - [ ] Is `sherpa-rs` complete enough for streaming + VAD, or do we need our own bindings?
 - [ ] Will Flathub accept prebuilt onnxruntime, or must it be built from source?
@@ -105,4 +107,4 @@ Goal: `murmur` daemon, hotkey toggles listening, phrases get typed.
 - [ ] int8 vs. full-precision Parakeet v3: accuracy and speed difference on CPU.
 - [ ] Best delay: compare accuracy at 0.5 / 1 / 1.5 s against whole-phrase Parakeet on the same recordings.
 - [ ] Is there a streaming model sherpa-onnx can run that already outputs punctuation + casing (e.g. NVIDIA cache-aware streaming FastConformer)?
-- [ ] **Output mechanism (biggest UX decision):** portal keystrokes (one-click Flatpak, works everywhere, not seamless) vs. input-method engine (Fcitx5/IBus: seamless and Mac-like, but not a one-click Flatpak and different per desktop). Decide after stage 0 shows how bad collisions and held modifiers are.
+- [x] **Output mechanism (biggest UX decision):** → portal EIS key events for now (D-005); IME stays Stage 7. portal keystrokes (one-click Flatpak, works everywhere, not seamless) vs. input-method engine (Fcitx5/IBus: seamless and Mac-like, but not a one-click Flatpak and different per desktop). Decide after stage 0 shows how bad collisions and held modifiers are.
