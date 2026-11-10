@@ -1,8 +1,9 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<!-- murmur app icon. Same microphone as the tray icons in src/icons.rs (24 px grid scaled
-     ×4, offset 16): red capsule filled to a voice level, grey holder, stem and base.
-     Render the 128 px PNG with: rsvg-convert -w 128 -h 128 -o io.github.gabus.Murmur-128.png io.github.gabus.Murmur.svg -->
 <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <!-- murmur app icon. Same microphone as the tray icons in src/icons.rs (24 px grid scaled
+       ×4, offset 16): red capsule filled to a voice level, grey holder, stem and base.
+       Keep <svg> at the very start: gdk-pixbuf (flatpak's icon validator) sniffs only the
+       first bytes of the file.
+       128 px PNG: rsvg-convert -w 128 -h 128 -o io.github.gabus.Murmur-128.png io.github.gabus.Murmur.svg -->
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#ffffff"/>
