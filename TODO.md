@@ -33,9 +33,10 @@ Goal: `murmur` daemon, hotkey toggles listening, phrases get typed.
 - [x] Re-check engine: re-run Parakeet TDT on the current sentence buffer every ~0.5 s
 - [x] Local-agreement committer: type words that two consecutive runs agree on; flush on pause / stop
 - [x] Trim the buffer at committed sentence ends so each run stays short
-- [ ] Output: type each committed word through the RemoteDesktop portal, with spacing
+- [x] Output: type each committed word through the RemoteDesktop portal, with spacing (EIS, D-005/D-006; nested-KWin tests)
 - [x] Measure: lag from spoken word to typed word, CPU while speaking, Parakeet run time per buffer length (`docs/benchmarks.md`)
-- [ ] End-to-end check of the daemon (hotkey → mic → typed text) in a nested KWin, then in the Flatpak
+- [x] End-to-end check of the daemon (WAV → engine → typed text) in a nested KWin (`tests/e2e_nested_kwin.rs`)
+- [ ] Verify the daemon inside the Flatpak (startup, portals, mic; dictation once the tray can toggle it)
 - [x] State machine: `Idle → Listening(+Loading) → Idle`, toggled by the shortcut only, never by silence
 - [x] Ring-buffer audio from key press so speech during model load isn't lost (worker channel buffers everything from Begin)
 - [x] On stop: flush the phrase in progress (transcribe + insert), then close the mic (250 ms tail)

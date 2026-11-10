@@ -47,3 +47,14 @@ the compositor's real XKB keymap. murmur presses Shift/AltGr itself and does not
   characters missing from the active layout use the clipboard fallback. Minimum desktops are
   Plasma 6.1+ and GNOME 46+ (EIS in RemoteDesktop).
 - Spec: README → Functional requirements → Output; Supported desktops; Known limitations.
+
+### D-006 · 2026-11-10 · Claude (from nested-KWin tests; maintainer informed)
+**Typing waits while the user physically holds *any* modifier: Shift, Ctrl, Alt, Super or
+AltGr.**
+- Why: tests showed that a user holding Shift (e.g. typing a capital) while murmur types turns
+  "hello" into "HELLO". The spec's principle is that typing and talking mix freely and nothing
+  breaks if you type yourself. Words are held back and typed once the keys are released, so
+  nothing is lost.
+- Also: murmur taps the `<LVL3>` key (ISO_Level3_Shift, never Alt) once per EIS device, because
+  KWin reports the active layout and held modifiers only after a change.
+- Spec: README → Functional requirements → Output; Known limitations → Held modifiers.

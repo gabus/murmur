@@ -99,7 +99,7 @@ impl Nested {
     }
 
     /// Environment for processes inside the nested session.
-    fn session_env(&self) -> Vec<(String, String)> {
+    pub fn session_env(&self) -> Vec<(String, String)> {
         let d = |sub: &str| self.dir.join(sub).display().to_string();
         vec![
             ("HOME".into(), std::env::var("HOME").unwrap_or_default()),

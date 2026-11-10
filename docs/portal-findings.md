@@ -104,6 +104,23 @@ the EIS fd with no dialog. libei 1.6.0.
 - **Not tested:** the GNOME portal path (xdg-desktop-portal-gnome dialog, restore token,
   Flatpak) and a real GNOME session.
 
+## Output module on nested KWin 6.7.5 (`tests/output_nested_kwin.rs`, tested)
+
+- Setup (handshake → resumed keyboard) takes about 5 ms with murmur's own EI reader
+  (`src/output/reader.rs`), with no pokes.
+- KWin sends **no `ei_keyboard.modifiers` until the state changes**, so on a new device the
+  layout group, Caps Lock and held keys are unknown. With lt active and murmur assuming us,
+  digits came out as Lithuanian letters. murmur taps `<LVL3>` (evdev 84, ISO_Level3_Shift
+  in every group) once per device, which makes KWin report them.
+- Modifiers from other devices, including other EIS clients, are forwarded. Held Ctrl and
+  held Shift hold text back (D-006). Caps Lock is planned for.
+- Layout-list change (`org.kde.kconfig.notify.ConfigChanged` on `/kxkbrc`;
+  `/Layouts reloadConfig` is ignored): KWin destroys the EIS keyboard, adds a new device with
+  the new keymap, and resets the layout to index 0. murmur recompiles and re-probes.
+- End to end (`tests/e2e_nested_kwin.rs`, `--features dev-harness`): the daemon dictated
+  `en.wav` into the test pad exactly, with the model loading (1.44 s) while audio was
+  buffered. Avg lag 0.93 s.
+
 ## Automated testing without the user's desktop
 
 `kwin_wayland --virtual --socket murmur-test-0` inside `dbus-run-session` starts an invisible
