@@ -42,6 +42,7 @@ fn load_wav(path: &str) -> anyhow::Result<Vec<f32>> {
 struct Timed<T> {
     inner: T,
     runs: Vec<(f64, Duration)>,
+    dump: bool,
 }
 
 impl<T: Transcriber> Transcriber for Timed<T> {
@@ -51,6 +52,19 @@ impl<T: Transcriber> Transcriber for Timed<T> {
     ) -> Result<Vec<murmur::asr::words::Word>, murmur::asr::AsrError> {
         let t = Instant::now();
         let r = self.inner.transcribe(samples);
+        if self.dump
+            && let Ok(words) = &r
+        {
+            let line: Vec<String> = words
+                .iter()
+                .map(|w| format!("{}[{:.2}-{:.2}]", w.text, w.start, w.end))
+                .collect();
+            println!(
+                "    hyp (buf {:.2}s): {}",
+                samples.len() as f64 / SAMPLE_RATE as f64,
+                line.join(" ")
+            );
+        }
         self.runs
             .push((samples.len() as f64 / SAMPLE_RATE as f64, t.elapsed()));
         r
@@ -60,6 +74,7 @@ impl<T: Transcriber> Transcriber for Timed<T> {
 fn main() -> anyhow::Result<()> {
     let mut gap = 1.5f64;
     let mut agc_on = false;
+    let mut dump = false;
     let mut cfg = EngineConfig::default();
     let mut threads = 4;
     let mut files = Vec::new();
@@ -67,6 +82,7 @@ fn main() -> anyhow::Result<()> {
     while let Some(a) = args.next() {
         match a.as_str() {
             "--agc" => agc_on = true,
+            "--dump" => dump = true,
             "--gap" => gap = args.next().and_then(|s| s.parse().ok()).unwrap_or(gap),
             "--min-age" => {
                 cfg.min_age = args
@@ -111,6 +127,7 @@ fn main() -> anyhow::Result<()> {
         Timed {
             inner: parakeet,
             runs: Vec::new(),
+            dump,
         },
         vad,
     );

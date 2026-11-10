@@ -19,16 +19,19 @@ use super::{
     engine::{EngineConfig, RecheckEngine, SAMPLE_RATE},
     parakeet::Parakeet,
 };
-use crate::vad::SileroVad;
+use crate::{agc::Agc, vad::SileroVad};
+
+/// Identifies one listening session (one press-to-press dictation).
+pub type SessionId = u64;
 
 /// Messages into the worker, processed strictly in order.
 #[derive(Debug)]
 pub enum AsrInput {
     /// A listening session starts. Loads the model if needed.
-    Begin,
+    Begin(SessionId),
     /// 16 kHz mono samples.
     Audio(Vec<f32>),
-    /// The session ends: transcribe what's left, then report `Finished`.
+    /// The current session ends: transcribe what's left, then report `Finished`.
     End,
     /// Drop the models (idle unload).
     Unload,
@@ -39,12 +42,15 @@ pub enum AsrInput {
 pub enum AsrOutput {
     /// Model loading started (the session is buffering audio meanwhile).
     Loading,
-    /// Model ready.
+    /// Model loaded and the session is being transcribed.
     Ready,
+    /// The model couldn't be loaded; the session's audio is discarded.
+    LoadFailed(AsrError),
     /// A committed word, already followed by its space (D-002).
     Text(String),
     /// Session finished; everything has been emitted.
-    Finished,
+    Finished(SessionId),
+    /// Transcription failed for a chunk (the session continues).
     Error(AsrError),
 }
 
@@ -82,7 +88,7 @@ impl AsrWorker {
 
     pub fn send(&self, msg: AsrInput) {
         // The worker only exits on Shutdown/drop, so a failed send means it
-        // panicked; the error has already been reported via the log.
+        // panicked; that has already been reported via the log.
         if self.tx.send(msg).is_err() {
             error!("ASR worker is gone");
         }
@@ -90,6 +96,7 @@ impl AsrWorker {
 }
 
 impl Drop for AsrWorker {
+    /// Blocks until the worker exits; drop it off the async runtime.
     fn drop(&mut self) {
         let _ = self.tx.send(AsrInput::Shutdown);
         if let Some(j) = self.join.take() {
@@ -112,9 +119,16 @@ fn load(cfg: &WorkerConfig) -> Result<Engine, AsrError> {
 /// so a pause inside a backlog is still noticed.
 const PUSH_SLICE: f64 = 0.1;
 
+struct Session {
+    id: SessionId,
+    /// False if the model failed to load: audio is dropped.
+    transcribing: bool,
+    agc: Agc,
+}
+
 fn run(cfg: WorkerConfig, rx: Receiver<AsrInput>, out: UnboundedSender<AsrOutput>) {
     let mut engine: Option<Engine> = None;
-    let mut active = false;
+    let mut session: Option<Session> = None;
     let mut held: Option<AsrInput> = None;
     let emit = |words: Vec<super::words::Word>| {
         for w in words {
@@ -131,29 +145,28 @@ fn run(cfg: WorkerConfig, rx: Receiver<AsrInput>, out: UnboundedSender<AsrOutput
             },
         };
         match msg {
-            AsrInput::Begin => {
-                active = true;
-                match engine.as_mut() {
-                    Some(e) => e.reset(),
-                    None => {
-                        let _ = out.send(AsrOutput::Loading);
-                        match load(&cfg) {
-                            Ok(e) => {
-                                engine = Some(e);
-                                let _ = out.send(AsrOutput::Ready);
-                            }
-                            Err(e) => {
-                                error!(error = %e, "model load failed");
-                                let _ = out.send(AsrOutput::Error(e));
-                            }
+            AsrInput::Begin(id) => {
+                if engine.is_none() {
+                    let _ = out.send(AsrOutput::Loading);
+                    match load(&cfg) {
+                        Ok(e) => engine = Some(e),
+                        Err(e) => {
+                            error!(error = %e, "model load failed");
+                            let _ = out.send(AsrOutput::LoadFailed(e));
                         }
                     }
                 }
+                if let Some(e) = engine.as_mut() {
+                    e.reset();
+                    let _ = out.send(AsrOutput::Ready);
+                }
+                session = Some(Session {
+                    id,
+                    transcribing: engine.is_some(),
+                    agc: Agc::new(SAMPLE_RATE as u32),
+                });
             }
             AsrInput::Audio(mut batch) => {
-                if !active {
-                    continue;
-                }
                 // Drain whatever else is queued (e.g. audio buffered during load).
                 while let Ok(next) = rx.try_recv() {
                     match next {
@@ -164,9 +177,15 @@ fn run(cfg: WorkerConfig, rx: Receiver<AsrInput>, out: UnboundedSender<AsrOutput
                         }
                     }
                 }
-                let Some(e) = engine.as_mut() else { continue };
+                let (Some(s), Some(e)) = (session.as_mut(), engine.as_mut()) else {
+                    continue;
+                };
+                if !s.transcribing {
+                    continue;
+                }
                 let slice = (PUSH_SLICE * SAMPLE_RATE as f64) as usize;
-                for part in batch.chunks(slice) {
+                for part in batch.chunks_mut(slice) {
+                    s.agc.process(part);
                     match e.push(part) {
                         Ok(words) => emit(words),
                         Err(err) => {
@@ -177,28 +196,29 @@ fn run(cfg: WorkerConfig, rx: Receiver<AsrInput>, out: UnboundedSender<AsrOutput
                 }
             }
             AsrInput::End => {
-                if let Some(e) = engine.as_mut() {
+                let Some(s) = session.take() else { continue };
+                if let (true, Some(e)) = (s.transcribing, engine.as_mut()) {
                     match e.finish() {
                         Ok(words) => emit(words),
                         Err(err) => {
                             let _ = out.send(AsrOutput::Error(err));
                         }
                     }
-                    let s = e.stats();
+                    let st = e.stats();
                     debug!(
-                        decodes = s.decodes,
-                        words = s.committed_words,
-                        avg_lag = s.total_commit_lag / f64::from(s.committed_words.max(1)),
-                        max_lag = s.max_commit_lag,
+                        decodes = st.decodes,
+                        words = st.committed_words,
+                        avg_lag = st.total_commit_lag / f64::from(st.committed_words.max(1)),
+                        max_lag = st.max_commit_lag,
+                        agc_gain = s.agc.gain(),
                         "session stats"
                     );
                     e.reset();
                 }
-                active = false;
-                let _ = out.send(AsrOutput::Finished);
+                let _ = out.send(AsrOutput::Finished(s.id));
             }
             AsrInput::Unload => {
-                if !active && engine.take().is_some() {
+                if session.is_none() && engine.take().is_some() {
                     info!("model unloaded");
                 }
             }

@@ -7,8 +7,15 @@ use sherpa_onnx::{SileroVadModelConfig, VadModelConfig, VoiceActivityDetector};
 
 use crate::asr::{AsrError, engine::SAMPLE_RATE, engine::SpeechDetector};
 
+/// sherpa's VAD re-copies the whole current speech segment on every call, so
+/// cost grows with the length of uninterrupted speech. We only need the
+/// speech/silence state, so close the internal segment this often.
+const SEGMENT_FLUSH_SECS: usize = 10;
+
 pub struct SileroVad {
     vad: VoiceActivityDetector,
+    /// Samples since the internal segment was last flushed, while in speech.
+    in_segment: usize,
 }
 
 impl SileroVad {
@@ -24,8 +31,9 @@ impl SileroVad {
                 min_silence_duration: min_silence,
                 min_speech_duration: 0.25,
                 window_size: 512,
-                // We only use the speech/silence state; never split long speech.
-                max_speech_duration: 3600.0,
+                // Above this, sherpa raises the threshold to force a cut; our
+                // periodic flush keeps segments far shorter.
+                max_speech_duration: 3.0 * SEGMENT_FLUSH_SECS as f32,
             },
             sample_rate: SAMPLE_RATE as i32,
             num_threads: 1,
@@ -33,16 +41,28 @@ impl SileroVad {
         };
         let vad = VoiceActivityDetector::create(&config, 60.0)
             .ok_or_else(|| AsrError::ModelLoad(model.to_path_buf()))?;
-        Ok(Self { vad })
+        Ok(Self { vad, in_segment: 0 })
     }
 }
 
 impl SpeechDetector for SileroVad {
     fn accept(&mut self, samples: &[f32]) {
+        if self.in_segment >= SEGMENT_FLUSH_SECS * SAMPLE_RATE {
+            // Flush *before* feeding new audio: the next window that still
+            // contains speech re-opens a segment, so `is_speech` never
+            // flickers to false here. The model's silence hangover is kept.
+            self.vad.flush();
+            self.in_segment = 0;
+        }
         self.vad.accept_waveform(samples);
         // We don't use the segments; drop them so the internal queue stays empty.
         while !self.vad.is_empty() {
             self.vad.pop();
+        }
+        if self.vad.detected() {
+            self.in_segment += samples.len();
+        } else {
+            self.in_segment = 0;
         }
     }
 
@@ -52,5 +72,6 @@ impl SpeechDetector for SileroVad {
 
     fn reset(&mut self) {
         self.vad.reset();
+        self.in_segment = 0;
     }
 }

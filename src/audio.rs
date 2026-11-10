@@ -6,7 +6,7 @@
 
 use std::{
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicU32, Ordering},
         mpsc,
     },
@@ -17,12 +17,13 @@ use cpal::{
     FromSample, SizedSample,
     traits::{DeviceTrait, HostTrait, StreamTrait},
 };
+use sherpa_onnx::LinearResampler;
 use tracing::{info, warn};
 
 pub const SAMPLE_RATE: u32 = 16_000;
-/// 20 ms callbacks. The default buffer size gave ~1 s callbacks and 2 s open
-/// latency with PulseAudio (docs/portal-findings.md).
-const FRAMES: u32 = 320;
+/// Callbacks every 20 ms. The default buffer size gave ~1 s callbacks and
+/// 2 s open latency with PulseAudio (docs/portal-findings.md).
+const CALLBACKS_PER_SEC: u32 = 50;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AudioError {
@@ -38,6 +39,9 @@ pub enum AudioError {
 
 /// Receives captured audio (called on the audio thread; must not block).
 pub type Sink = Box<dyn FnMut(Vec<f32>) + Send + 'static>;
+/// Called (on the audio thread) when the stream fails after it started,
+/// e.g. the device was unplugged.
+pub type OnError = Box<dyn Fn(String) + Send + Sync + 'static>;
 
 /// Current input level (RMS of the last chunk, f32 bits) for the tray icon.
 #[derive(Debug, Clone, Default)]
@@ -59,13 +63,14 @@ pub struct Capture {
 
 impl Capture {
     /// Opens the default input device and starts streaming to `sink`.
-    pub fn start(sink: Sink, level: Level) -> Result<Self, AudioError> {
+    /// Blocks until the stream runs (cpal's `play` waits for the first buffer).
+    pub fn start(sink: Sink, on_error: OnError, level: Level) -> Result<Self, AudioError> {
         let (ready_tx, ready_rx) = mpsc::channel::<Result<(), AudioError>>();
         let (stop_tx, stop_rx) = mpsc::channel::<()>();
         let thread = std::thread::Builder::new()
             .name("murmur-audio".into())
             .spawn(move || {
-                let stream = match open(sink, level) {
+                let stream = match open(sink, on_error, level) {
                     Ok(s) => s,
                     Err(e) => {
                         let _ = ready_tx.send(Err(e));
@@ -115,7 +120,13 @@ impl Drop for Capture {
     }
 }
 
-fn open(sink: Sink, level: Level) -> Result<cpal::Stream, AudioError> {
+struct Shared {
+    sink: Mutex<Sink>,
+    on_error: OnError,
+    level: Level,
+}
+
+fn open(sink: Sink, on_error: OnError, level: Level) -> Result<cpal::Stream, AudioError> {
     let host = cpal::default_host();
     let device = host.default_input_device().ok_or(AudioError::NoDevice)?;
     let name = device
@@ -123,19 +134,22 @@ fn open(sink: Sink, level: Level) -> Result<cpal::Stream, AudioError> {
         .map(|d| d.to_string())
         .unwrap_or_default();
     info!(host = ?host.id(), device = %name, "opening microphone");
+    let shared = Arc::new(Shared {
+        sink: Mutex::new(sink),
+        on_error,
+        level,
+    });
 
     let direct = cpal::StreamConfig {
         channels: 1,
         sample_rate: SAMPLE_RATE,
-        buffer_size: cpal::BufferSize::Fixed(FRAMES),
+        buffer_size: cpal::BufferSize::Fixed(SAMPLE_RATE / CALLBACKS_PER_SEC),
     };
-    let sink = Arc::new(std::sync::Mutex::new(sink));
     match build::<f32>(
         &device,
         &direct,
-        Converter::new(1, SAMPLE_RATE),
-        sink.clone(),
-        level.clone(),
+        Converter::new(1, SAMPLE_RATE)?,
+        shared.clone(),
     ) {
         Ok(stream) => {
             stream
@@ -149,17 +163,24 @@ fn open(sink: Sink, level: Level) -> Result<cpal::Stream, AudioError> {
     let def = device
         .default_input_config()
         .map_err(|e| AudioError::Config(e.to_string()))?;
+    let frames = def.sample_rate() / CALLBACKS_PER_SEC;
+    let buffer_size = match def.buffer_size() {
+        cpal::SupportedBufferSize::Range { min, max } => {
+            cpal::BufferSize::Fixed(frames.clamp(*min, *max))
+        }
+        cpal::SupportedBufferSize::Unknown => cpal::BufferSize::Fixed(frames),
+    };
     let config = cpal::StreamConfig {
         channels: def.channels(),
         sample_rate: def.sample_rate(),
-        buffer_size: cpal::BufferSize::Default,
+        buffer_size,
     };
-    let conv = Converter::new(def.channels(), def.sample_rate());
+    let conv = || Converter::new(def.channels(), def.sample_rate());
     let stream = match def.sample_format() {
-        cpal::SampleFormat::F32 => build::<f32>(&device, &config, conv, sink, level),
-        cpal::SampleFormat::I16 => build::<i16>(&device, &config, conv, sink, level),
-        cpal::SampleFormat::I32 => build::<i32>(&device, &config, conv, sink, level),
-        cpal::SampleFormat::U16 => build::<u16>(&device, &config, conv, sink, level),
+        cpal::SampleFormat::F32 => build::<f32>(&device, &config, conv()?, shared),
+        cpal::SampleFormat::I16 => build::<i16>(&device, &config, conv()?, shared),
+        cpal::SampleFormat::I32 => build::<i32>(&device, &config, conv()?, shared),
+        cpal::SampleFormat::U16 => build::<u16>(&device, &config, conv()?, shared),
         other => return Err(AudioError::Config(format!("sample format {other:?}"))),
     }?;
     stream
@@ -172,13 +193,13 @@ fn build<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
     mut conv: Converter,
-    sink: Arc<std::sync::Mutex<Sink>>,
-    level: Level,
+    shared: Arc<Shared>,
 ) -> Result<cpal::Stream, AudioError>
 where
     T: SizedSample + Send + 'static,
     f32: FromSample<T>,
 {
+    let errors = shared.clone();
     device
         .build_input_stream::<T, _, _>(
             *config,
@@ -188,37 +209,40 @@ where
                     return;
                 }
                 let rms = (out.iter().map(|x| x * x).sum::<f32>() / out.len() as f32).sqrt();
-                level.set(rms);
-                if let Ok(mut s) = sink.lock() {
+                shared.level.set(rms);
+                if let Ok(mut s) = shared.sink.lock() {
                     s(out);
                 }
             },
-            |e| warn!(error = %e, "audio stream error"),
+            move |e| {
+                warn!(error = %e, "audio stream error");
+                (errors.on_error)(e.to_string());
+            },
             None,
         )
         .map_err(|e| AudioError::Stream(e.to_string()))
 }
 
-/// Downmixes to mono and resamples to 16 kHz. Integer ratios (48k, 32k) are
-/// decimated with a box filter; others use linear interpolation.
+/// Downmixes to mono and resamples to 16 kHz (kaldi's windowed-sinc
+/// resampler from sherpa-onnx, so 48 kHz input doesn't alias).
 struct Converter {
     channels: usize,
-    rate: u32,
-    /// Fractional read position for linear resampling, in input frames.
-    pos: f64,
-    prev: f32,
-    acc: Vec<f32>,
+    resampler: Option<LinearResampler>,
 }
 
 impl Converter {
-    fn new(channels: u16, rate: u32) -> Self {
-        Self {
+    fn new(channels: u16, rate: u32) -> Result<Self, AudioError> {
+        let resampler = if rate == SAMPLE_RATE {
+            None
+        } else {
+            let r = LinearResampler::create(rate as i32, SAMPLE_RATE as i32)
+                .ok_or_else(|| AudioError::Config(format!("cannot resample from {rate} Hz")))?;
+            Some(r)
+        };
+        Ok(Self {
             channels: usize::from(channels.max(1)),
-            rate,
-            pos: 0.0,
-            prev: 0.0,
-            acc: Vec::new(),
-        }
+            resampler,
+        })
     }
 
     fn process<T>(&mut self, data: &[T]) -> Vec<f32>
@@ -233,40 +257,10 @@ impl Converter {
                 .map(|f| f.iter().map(|s| s.to_sample::<f32>()).sum::<f32>() / f.len() as f32)
                 .collect()
         };
-        if self.rate == SAMPLE_RATE {
-            return mono;
+        match &self.resampler {
+            None => mono,
+            Some(r) => r.resample(&mono, false),
         }
-        if self.rate.is_multiple_of(SAMPLE_RATE) {
-            let n = (self.rate / SAMPLE_RATE) as usize;
-            self.acc.extend_from_slice(&mono);
-            let whole = self.acc.len() / n * n;
-            let out = self.acc[..whole]
-                .chunks(n)
-                .map(|c| c.iter().sum::<f32>() / n as f32)
-                .collect();
-            self.acc.drain(..whole);
-            return out;
-        }
-        // Linear interpolation between `prev` (frame -1) and the new frames.
-        let step = f64::from(self.rate) / f64::from(SAMPLE_RATE);
-        let mut out = Vec::with_capacity((mono.len() as f64 / step) as usize + 1);
-        while self.pos < mono.len() as f64 {
-            let i = self.pos.floor() as isize;
-            let frac = (self.pos - self.pos.floor()) as f32;
-            let a = if i == 0 {
-                self.prev
-            } else {
-                mono[(i - 1) as usize]
-            };
-            let b = mono[i as usize];
-            out.push(a + (b - a) * frac);
-            self.pos += step;
-        }
-        self.pos -= mono.len() as f64;
-        if let Some(last) = mono.last() {
-            self.prev = *last;
-        }
-        out
     }
 }
 
@@ -274,39 +268,38 @@ impl Converter {
 mod tests {
     use super::*;
 
+    fn conv(ch: u16, rate: u32) -> Converter {
+        Converter::new(ch, rate).expect("resampler for a standard rate")
+    }
+
     #[test]
     fn passthrough_at_16k_mono() {
-        let mut c = Converter::new(1, 16_000);
+        let mut c = conv(1, 16_000);
         assert_eq!(c.process(&[0.5f32, -0.5]), vec![0.5, -0.5]);
     }
 
     #[test]
-    fn downmix_and_decimate_48k_stereo() {
-        let mut c = Converter::new(2, 48_000);
-        // 6 stereo frames → 2 output samples
-        let data = [
-            1.0f32, 0.0, 1.0, 0.0, 1.0, 0.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0,
-        ];
-        assert_eq!(c.process(&data), vec![0.5, -1.0]);
-        // leftovers carry over between callbacks
-        assert!(c.process(&[1.0f32, 1.0]).is_empty());
-        assert_eq!(c.process(&[1.0f32, 1.0, 1.0, 1.0]), vec![1.0]);
+    fn downmixes_stereo() {
+        let mut c = conv(2, 16_000);
+        assert_eq!(c.process(&[1.0f32, 0.0, -1.0, -1.0]), vec![0.5, -1.0]);
     }
 
     #[test]
-    fn linear_resample_44k1_length() {
-        let mut c = Converter::new(1, 44_100);
-        let mut total = 0;
-        for _ in 0..100 {
-            total += c.process(&[0.0f32; 441]).len();
+    fn resamples_48k_and_44k1_to_16k() {
+        for rate in [48_000u32, 44_100] {
+            let mut c = conv(1, rate);
+            let mut total = 0;
+            // 1 s of input in 10 ms callbacks
+            for _ in 0..100 {
+                total += c.process(&vec![0.0f32; (rate / 100) as usize]).len();
+            }
+            assert!((15_900..=16_000).contains(&total), "{rate}: {total}");
         }
-        // 1 s of input → 16000 ± 1 samples
-        assert!((15_999..=16_001).contains(&total), "{total}");
     }
 
     #[test]
     fn i16_input_is_scaled() {
-        let mut c = Converter::new(1, 16_000);
+        let mut c = conv(1, 16_000);
         let out = c.process(&[i16::MAX, i16::MIN]);
         assert!((out[0] - 1.0).abs() < 1e-3 && (out[1] + 1.0).abs() < 1e-3);
     }

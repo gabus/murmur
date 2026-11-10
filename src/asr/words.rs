@@ -22,6 +22,9 @@ pub fn tokens_to_words(
     offset: f64,
 ) -> Vec<Word> {
     let mut words: Vec<Word> = Vec::new();
+    // A bare space token (sentencepiece `▁` on its own, e.g. before digits or
+    // symbols the vocabulary has no `▁x` piece for) starts the *next* word.
+    let mut boundary = false;
     for (i, tok) in tokens.iter().enumerate() {
         let start = timestamps.get(i).map_or(offset, |t| offset + f64::from(*t));
         let end = match durations.get(i) {
@@ -35,8 +38,10 @@ pub fn tokens_to_words(
             None => (false, tok.as_str()),
         };
         if piece.is_empty() {
+            boundary |= new_word;
             continue;
         }
+        let new_word = new_word || std::mem::take(&mut boundary);
         match words.last_mut() {
             Some(w) if !new_word => {
                 w.text.push_str(piece);
@@ -101,6 +106,20 @@ mod tests {
         );
         let texts: Vec<_> = w.iter().map(|w| w.text.as_str()).collect();
         assert_eq!(texts, ["Labas", "rytas"]);
+    }
+
+    #[test]
+    fn bare_space_token_starts_the_next_word() {
+        // Parakeet v3 has no "▁1"…"▁9" pieces: " 1030" comes as [" ", "1", "0", "3", "0"].
+        let t = toks(&[
+            " at", " ", "1", "0", "3", "0", " on", " Ma", "y", " ", "4", "th", ".",
+        ]);
+        let ts: Vec<f32> = (0..t.len()).map(|i| i as f32 * 0.1).collect();
+        let w = tokens_to_words(&t, &ts, &[], 0.0);
+        let texts: Vec<_> = w.iter().map(|w| w.text.as_str()).collect();
+        assert_eq!(texts, ["at", "1030", "on", "May", "4th."]);
+        // the number starts at its first digit, not at the space token
+        assert!((w[1].start - 0.2).abs() < 1e-6);
     }
 
     #[test]

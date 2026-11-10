@@ -9,7 +9,7 @@ use tokio::{
 use tracing::{debug, error, info, warn};
 
 use crate::{
-    asr::worker::{AsrInput, AsrOutput, AsrWorker},
+    asr::worker::{AsrInput, AsrOutput, AsrWorker, SessionId},
     audio::{Capture, Level},
     hotkey::HotkeyEvent,
     output::{Output, OutputEvent},
@@ -17,6 +17,10 @@ use crate::{
 
 /// Keep recording this long after the stop key so the last syllable isn't cut.
 const STOP_TAIL: Duration = Duration::from_millis(250);
+/// Opening the mic should take ~50 ms; give up if a source never delivers.
+const MIC_OPEN_TIMEOUT: Duration = Duration::from_secs(3);
+/// On quit, wait at most this long for the last phrase to be transcribed.
+const QUIT_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// What the user should see (tray icon in stage 2).
 #[derive(Debug, Clone, PartialEq)]
@@ -49,9 +53,11 @@ pub struct App {
     level: Level,
     status: watch::Sender<Status>,
     state: State,
+    session: SessionId,
     capture: Option<Capture>,
     stopping: Option<JoinHandle<()>>,
-    model_ready: bool,
+    audio_err_tx: mpsc::UnboundedSender<String>,
+    audio_err_rx: mpsc::UnboundedReceiver<String>,
 }
 
 impl App {
@@ -61,15 +67,18 @@ impl App {
         level: Level,
         status: watch::Sender<Status>,
     ) -> Self {
+        let (audio_err_tx, audio_err_rx) = mpsc::unbounded_channel();
         Self {
             asr,
             output,
             level,
             status,
             state: State::Idle,
+            session: 0,
             capture: None,
             stopping: None,
-            model_ready: false,
+            audio_err_tx,
+            audio_err_rx,
         }
     }
 
@@ -94,18 +103,50 @@ impl App {
                         self.set_status(Status::Error("Shortcut unavailable".into()));
                     }
                 },
-                Some(out) = asr_out.recv() => self.on_asr(out),
+                Some(out) = asr_out.recv() => self.on_asr(out).await,
                 Some(ev) = output_events.recv() => self.on_output(ev),
+                Some(why) = self.audio_err_rx.recv() => {
+                    if self.state == State::Listening {
+                        error!(%why, "microphone failed while listening");
+                        self.set_status(Status::Error(format!("Microphone error: {why}")));
+                        self.stop().await;
+                    }
+                }
             }
         }
+        self.shutdown(asr_out).await;
+    }
+
+    /// Finishes the phrase in progress (nothing is lost), then tears down
+    /// blocking parts off the async runtime.
+    async fn shutdown(mut self, mut asr_out: mpsc::UnboundedReceiver<AsrOutput>) {
         info!("shutting down");
         if self.state == State::Listening {
             self.stop().await;
+        }
+        if self.state == State::Finishing {
+            let drain = async {
+                while let Some(out) = asr_out.recv().await {
+                    match out {
+                        AsrOutput::Text(t) => self.output.type_text(t),
+                        AsrOutput::Finished(id) if id == self.session => break,
+                        _ => {}
+                    }
+                }
+            };
+            if tokio::time::timeout(QUIT_DRAIN_TIMEOUT, drain)
+                .await
+                .is_err()
+            {
+                warn!("gave up waiting for the last phrase");
+            }
         }
         if let Some(h) = self.stopping.take() {
             let _ = h.await;
         }
         self.output.flush().await;
+        let asr = self.asr;
+        let _ = tokio::task::spawn_blocking(move || drop(asr)).await;
     }
 
     async fn toggle(&mut self) {
@@ -120,36 +161,38 @@ impl App {
         if let Some(h) = self.stopping.take() {
             let _ = h.await;
         }
-        self.asr.send(AsrInput::Begin);
+        self.session += 1;
+        self.asr.send(AsrInput::Begin(self.session));
         self.state = State::Listening;
-        self.set_status(if self.model_ready {
-            Status::Listening
-        } else {
-            Status::Loading
-        });
+        // The icon switches immediately; Ready flips Loading → Listening.
+        self.set_status(Status::Loading);
+
         let tx = self.asr.sender();
         let sink = Box::new(move |chunk: Vec<f32>| {
             let _ = tx.send(AsrInput::Audio(chunk));
         });
+        let err_tx = self.audio_err_tx.clone();
+        let on_error = Box::new(move |why: String| {
+            let _ = err_tx.send(why);
+        });
         let level = self.level.clone();
-        match tokio::task::spawn_blocking(move || Capture::start(sink, level)).await {
-            Ok(Ok(c)) => {
+        let open = tokio::task::spawn_blocking(move || Capture::start(sink, on_error, level));
+        let failure = match tokio::time::timeout(MIC_OPEN_TIMEOUT, open).await {
+            Ok(Ok(Ok(c))) => {
                 info!("listening");
                 self.capture = Some(c);
+                return;
             }
-            Ok(Err(e)) => {
-                error!(error = %e, "cannot open microphone");
-                self.asr.send(AsrInput::End);
-                self.state = State::Finishing;
-                self.set_status(Status::Error(e.to_string()));
-            }
-            Err(e) => {
-                error!(error = %e, "audio start task failed");
-                self.asr.send(AsrInput::End);
-                self.state = State::Finishing;
-                self.set_status(Status::Error("Microphone error".into()));
-            }
-        }
+            Ok(Ok(Err(e))) => e.to_string(),
+            Ok(Err(e)) => format!("audio task failed: {e}"),
+            // The blocking task keeps running; if it ever opens, the Capture is
+            // dropped with the task's result, which closes the stream.
+            Err(_) => "the microphone did not respond".to_owned(),
+        };
+        error!(error = %failure, "cannot open microphone");
+        self.asr.send(AsrInput::End);
+        self.state = State::Finishing;
+        self.set_status(Status::Error(failure));
     }
 
     async fn stop(&mut self) {
@@ -167,18 +210,25 @@ impl App {
         }));
     }
 
-    fn on_asr(&mut self, out: AsrOutput) {
+    async fn on_asr(&mut self, out: AsrOutput) {
         match out {
             AsrOutput::Loading => debug!("model loading"),
             AsrOutput::Ready => {
-                self.model_ready = true;
                 if self.state == State::Listening {
                     self.set_status(Status::Listening);
                 }
             }
+            AsrOutput::LoadFailed(e) => {
+                error!(error = %e, "speech model unavailable");
+                self.set_status(Status::Error(format!("Speech model unavailable: {e}")));
+                if self.state == State::Listening {
+                    // Don't keep the mic open for nothing.
+                    self.stop().await;
+                }
+            }
             AsrOutput::Text(t) => self.output.type_text(t),
-            AsrOutput::Finished => {
-                if self.state == State::Finishing {
+            AsrOutput::Finished(id) => {
+                if self.state == State::Finishing && id == self.session {
                     self.state = State::Idle;
                     if !matches!(*self.status.borrow(), Status::Error(_)) {
                         self.set_status(Status::Idle);
@@ -188,8 +238,6 @@ impl App {
             }
             AsrOutput::Error(e) => {
                 error!(error = %e, "speech recognition error");
-                self.model_ready = false;
-                self.set_status(Status::Error(e.to_string()));
             }
         }
     }

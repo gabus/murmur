@@ -68,9 +68,7 @@ mod tests {
     use super::*;
 
     fn tone(amp: f32, n: usize) -> Vec<f32> {
-        (0..n)
-            .map(|i| amp * (i as f32 * 0.05).sin())
-            .collect()
+        (0..n).map(|i| amp * (i as f32 * 0.05).sin()).collect()
     }
 
     fn run(agc: &mut Agc, amp: f32, secs: f32) -> f32 {
