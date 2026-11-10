@@ -30,3 +30,16 @@ Input: `en.wav + de.wav + en.wav` from the model's `test_wavs`, 1.5 s silence be
 
 Answers the TODO open question on re-check CPU cost: Parakeet re-run every 0.5 s is
 affordable on this CPU. Weaker CPUs still need measuring (Stage 3 benchmarks).
+
+## Quiet microphones and automatic gain (`src/agc.rs`)
+
+The maintainer's ArctisX mic peaks at about 0.0085 on room noise. The same JFK clip,
+attenuated:
+
+| Input peak | Without AGC | With AGC (target peak 0.5, max +20 dB) |
+|---|---|---|
+| 0.045 (−20 dB) | all 17 words, avg lag 0.82 s | all 17 words, avg lag 0.79 s |
+| 0.013 (−30 dB) | **first 4 words lost** (VAD missed the onset), avg lag 1.88 s | all 17 words, avg lag 0.84 s |
+| room noise only (3 s, real mic) | 0 decodes | 0 decodes (no false triggers) |
+
+Normal-level speech is unchanged with AGC on.

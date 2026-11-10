@@ -59,12 +59,14 @@ impl<T: Transcriber> Transcriber for Timed<T> {
 
 fn main() -> anyhow::Result<()> {
     let mut gap = 1.5f64;
+    let mut agc_on = false;
     let mut cfg = EngineConfig::default();
     let mut threads = 4;
     let mut files = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
+            "--agc" => agc_on = true,
             "--gap" => gap = args.next().and_then(|s| s.parse().ok()).unwrap_or(gap),
             "--min-age" => {
                 cfg.min_age = args
@@ -114,8 +116,13 @@ fn main() -> anyhow::Result<()> {
     );
     let mut typed = String::new();
     let wall = Instant::now();
+    let mut agc = murmur::agc::Agc::new(SAMPLE_RATE as u32);
     for chunk in audio.chunks(320) {
-        for w in engine.push(chunk)? {
+        let mut chunk = chunk.to_vec();
+        if agc_on {
+            agc.process(&mut chunk);
+        }
+        for w in engine.push(&chunk)? {
             println!(
                 "  {:>6.2}s  {:<16} (word end {:.2}s, lag {:.2}s)",
                 engine.now(),

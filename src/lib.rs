@@ -1,5 +1,6 @@
 //! murmur: live voice dictation for Wayland. See README.md for the spec.
 
+pub mod agc;
 pub mod app;
 pub mod asr;
 pub mod audio;
