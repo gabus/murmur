@@ -5,6 +5,7 @@ use std::{
     io,
     os::fd::OwnedFd,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use ashpd::{
@@ -16,12 +17,16 @@ use ashpd::{
     },
     zbus,
 };
+use futures_util::StreamExt;
+use tokio::sync::oneshot;
 use tracing::{debug, warn};
 
 use super::EisSource;
 
 /// KWin's `connectToEIS` capability bit for a keyboard (same value as the portal's).
 const KWIN_KEYBOARD: i32 = 1;
+/// How long to wait for the subscription to the session's `Closed` signal before starting.
+const SUBSCRIBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Why no EIS socket could be obtained.
 #[derive(Debug, thiserror::Error)]
@@ -42,15 +47,44 @@ pub(crate) enum SessionHandle {
     Portal {
         // Kept for the proxy's D-Bus connection, which the session lives on.
         _portal: RemoteDesktop,
-        session: Session<RemoteDesktop>,
+        session: Arc<Session<RemoteDesktop>>,
+        /// Fires when the portal emits the session's `Closed` signal.
+        closed: Option<oneshot::Receiver<()>>,
+        /// The task listening for `Closed`; stopped with the handle.
+        _watcher: AbortOnDrop,
     },
     Kwin {
         bus: zbus::Connection,
         cookie: i32,
     },
+    #[cfg(test)]
+    Test {
+        /// Fires when the test closes the "portal session".
+        closed: Option<oneshot::Receiver<()>>,
+    },
+}
+
+/// Aborts a spawned task when dropped.
+pub(crate) struct AbortOnDrop(tokio::task::AbortHandle);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 impl SessionHandle {
+    /// Resolves when the compositor or the user closed the session (e.g. KDE's "stop remote
+    /// control"). Never resolves for sessions without such a signal. Cancel-safe.
+    pub(crate) async fn closed(&mut self) {
+        match self {
+            Self::Portal { closed, .. } => fired(closed).await,
+            #[cfg(test)]
+            Self::Test { closed } => fired(closed).await,
+            Self::Kwin { .. } => std::future::pending().await,
+        }
+    }
+
     /// Ends the session. Errors are logged, not returned: there's nothing left to do.
     pub(crate) async fn close(self) {
         match self {
@@ -59,6 +93,8 @@ impl SessionHandle {
                     debug!("closing the RemoteDesktop session failed: {e}");
                 }
             }
+            #[cfg(test)]
+            Self::Test { .. } => {}
             Self::Kwin { bus, cookie } => {
                 let res = bus
                     .call_method(
@@ -77,11 +113,62 @@ impl SessionHandle {
     }
 }
 
+/// Resolves when `signal` fires; never if its sender is gone without firing. Cancel-safe.
+async fn fired(signal: &mut Option<oneshot::Receiver<()>>) {
+    let fired = match signal.as_mut() {
+        Some(rx) => rx.await.is_ok(),
+        None => false,
+    };
+    // A finished receiver must not be polled again.
+    *signal = None;
+    if !fired {
+        std::future::pending::<()>().await;
+    }
+}
+
+/// Watches `session` for the portal's `Closed` signal; returns once subscribed, so a close
+/// right after this call isn't missed.
+async fn watch_closed(
+    session: &Arc<Session<RemoteDesktop>>,
+) -> (oneshot::Receiver<()>, AbortOnDrop) {
+    let (subscribed_tx, subscribed) = oneshot::channel();
+    let (closed_tx, closed) = oneshot::channel();
+    let session = Arc::clone(session);
+    let task = tokio::spawn(async move {
+        match session.receive_closed().await {
+            Ok(mut signal) => {
+                let _ = subscribed_tx.send(());
+                // An item is the signal; the end of the stream means the bus connection is
+                // gone, and the session with it.
+                let _ = signal.next().await;
+                let _ = closed_tx.send(());
+            }
+            Err(e) => {
+                warn!("cannot watch the RemoteDesktop session for closing: {e}");
+                let _ = subscribed_tx.send(());
+                // Keep `closed_tx` alive: the EIS socket still tells us about a lost session.
+                std::future::pending::<()>().await;
+            }
+        }
+    });
+    let watcher = AbortOnDrop(task.abort_handle());
+    // Subscribing is one D-Bus round trip; don't let a stuck bus hold up the session.
+    if tokio::time::timeout(SUBSCRIBE_TIMEOUT, subscribed)
+        .await
+        .is_err()
+    {
+        debug!("subscribing to the RemoteDesktop session's Closed signal is slow; going on");
+    }
+    (closed, watcher)
+}
+
 /// Opens a session and returns its EIS socket.
 pub(crate) async fn open(source: &EisSource) -> Result<(OwnedFd, SessionHandle), SourceError> {
     match source {
         EisSource::Portal { token_path } => open_portal(token_path).await,
         EisSource::KwinDirect => open_kwin().await,
+        #[cfg(test)]
+        EisSource::Test(connections) => connections.open(),
     }
 }
 
@@ -95,15 +182,22 @@ async fn open_portal(token_path: &Path) -> Result<(OwnedFd, SessionHandle), Sour
 
     let portal = RemoteDesktop::new().await.map_err(portal_error)?;
     if portal.version() < 2 {
-        return Err(SourceError::Unavailable(format!(
-            "RemoteDesktop portal version {} has no ConnectToEIS (needs 2)",
-            portal.version()
-        )));
+        // ashpd also reports version 1 when it couldn't read the property at all.
+        let version = read_portal_version().await?;
+        if version < 2 {
+            return Err(SourceError::Unavailable(format!(
+                "RemoteDesktop portal version {version} has no ConnectToEIS (needs 2)"
+            )));
+        }
     }
-    let session = portal
-        .create_session(CreateSessionOptions::default())
-        .await
-        .map_err(portal_error)?;
+    let session = Arc::new(
+        portal
+            .create_session(CreateSessionOptions::default())
+            .await
+            .map_err(portal_error)?,
+    );
+    // Subscribe before starting, so a close right after the start isn't missed.
+    let (closed, watcher) = watch_closed(&session).await;
     let opened = start_portal_session(&portal, &session, token.as_deref(), token_path).await;
     match opened {
         Ok(fd) => Ok((
@@ -111,6 +205,8 @@ async fn open_portal(token_path: &Path) -> Result<(OwnedFd, SessionHandle), Sour
             SessionHandle::Portal {
                 _portal: portal,
                 session,
+                closed: Some(closed),
+                _watcher: watcher,
             },
         )),
         Err(e) => {
@@ -175,10 +271,14 @@ async fn start_portal_session(
 
 fn portal_error(e: ashpd::Error) -> SourceError {
     match e {
+        // KDE and GNOME report a denied dialog as "cancelled".
         ashpd::Error::Response(ResponseError::Cancelled) => SourceError::PermissionDenied,
-        // KDE and GNOME report a denied dialog as "cancelled"; "other" is any other way the
-        // interaction ended. Neither granted typing, so both count as a denial.
-        ashpd::Error::Response(ResponseError::Other) => SourceError::PermissionDenied,
+        // Response code 2: xdg-desktop-portal also uses it when the backend call failed, so it
+        // isn't the user's answer. (The restore token is spent either way: the portal deletes
+        // it on `SelectDevices` and saves it again only when `Start` succeeds.)
+        ashpd::Error::Response(ResponseError::Other) => SourceError::Unavailable(
+            "the RemoteDesktop portal could not complete the request".into(),
+        ),
         ashpd::Error::Portal(ashpd::PortalError::Cancelled(_)) => SourceError::PermissionDenied,
         ashpd::Error::Portal(ashpd::PortalError::NotAllowed(msg)) => {
             SourceError::Unavailable(format!("RemoteDesktop portal not allowed: {msg}"))
@@ -191,6 +291,38 @@ fn portal_error(e: ashpd::Error) -> SourceError {
         )),
         other => SourceError::Failed(format!("RemoteDesktop portal: {other}")),
     }
+}
+
+/// Reads the RemoteDesktop portal's `version` property directly, to tell "too old" apart from
+/// "couldn't ask".
+async fn read_portal_version() -> Result<u32, SourceError> {
+    let failed = |e: zbus::Error| match &e {
+        zbus::Error::MethodError(name, ..)
+            if name.as_str() == "org.freedesktop.DBus.Error.ServiceUnknown"
+                || name.as_str() == "org.freedesktop.DBus.Error.InvalidArgs"
+                || name.as_str() == "org.freedesktop.DBus.Error.UnknownInterface" =>
+        {
+            SourceError::Unavailable(format!("no RemoteDesktop portal on this desktop ({e})"))
+        }
+        _ => SourceError::Failed(format!("cannot read the RemoteDesktop portal version: {e}")),
+    };
+    let bus = zbus::Connection::session().await.map_err(failed)?;
+    let reply = bus
+        .call_method(
+            Some("org.freedesktop.portal.Desktop"),
+            "/org/freedesktop/portal/desktop",
+            Some("org.freedesktop.DBus.Properties"),
+            "Get",
+            &("org.freedesktop.portal.RemoteDesktop", "version"),
+        )
+        .await
+        .map_err(failed)?;
+    let value: zbus::OwnedVariant = reply.body().deserialize().map_err(failed)?;
+    u32::try_from(value).map_err(|e| {
+        SourceError::Failed(format!(
+            "the RemoteDesktop portal version is not a number: {e}"
+        ))
+    })
 }
 
 async fn read_token(path: PathBuf) -> Option<String> {

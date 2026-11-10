@@ -74,11 +74,25 @@ struct DeviceState {
     mods_seen: bool,
     /// The probe key was tapped to learn `mods` (at most once per device).
     probed: bool,
+    /// Modifiers the probe tap sets (0 if no tap was sent). If no `modifiers` event answers the
+    /// tap, the tap changed nothing: the user already holds that modifier (e.g. AltGr).
+    probe_mask: u32,
 }
 
 impl DeviceState {
     fn usable(&self) -> bool {
         self.done && self.resumed && self.keyboard.is_some() && self.table.is_some()
+    }
+
+    /// The modifier state to plan with. Until the compositor reports one after the probe tap,
+    /// assume the probe's own modifier is held, so typing waits instead of typing with an
+    /// unseen AltGr (only consulted once the tap's `sync` round trip has completed).
+    fn planning_mods(&self) -> ModState {
+        let mut mods = self.mods;
+        if !self.mods_seen {
+            mods.depressed |= self.probe_mask;
+        }
+        mods
     }
 }
 
@@ -417,7 +431,7 @@ impl EisConnection {
     /// The active keyboard's keymap table and modifier state, if there is one.
     pub(crate) fn keyboard(&self) -> Option<(&KeyTable, ModState)> {
         let d = self.devices.get(self.active.as_ref()?)?;
-        Some((d.table.as_ref()?, d.mods))
+        Some((d.table.as_ref()?, d.planning_mods()))
     }
 
     /// Starts a `sync` round trip; [`Update::Synced`] reports its completion. Returns `false`
@@ -435,7 +449,9 @@ impl EisConnection {
     /// layout group, Caps Lock and keys the user already holds are unknown. If no modifiers
     /// event has arrived yet, taps the keymap's probe key (AltGr on a key that is AltGr in
     /// every group) once per device, which makes the compositor report the full state. The
-    /// caller's next `sync` round trip then waits for that report.
+    /// caller's next `sync` round trip then waits for that report. If none comes, the user
+    /// already held that modifier, so [`EisConnection::keyboard`] reports it as held until the
+    /// compositor says otherwise.
     pub(crate) async fn learn_modifiers(&mut self) -> io::Result<()> {
         let Some(d) = self
             .active
@@ -448,10 +464,15 @@ impl EisConnection {
             return Ok(());
         }
         d.probed = true;
-        let Some(key) = d.table.as_ref().and_then(KeyTable::probe_key) else {
+        let Some((key, mask)) = d
+            .table
+            .as_ref()
+            .and_then(|t| Some((t.probe_key()?, t.probe_mask())))
+        else {
             debug!("no probe key in this keymap; assuming group 0 until the state changes");
             return Ok(());
         };
+        d.probe_mask = mask;
         debug!(key, "tapping the probe key to learn the modifier state");
         let tap = [
             KeyEvent { key, pressed: true },

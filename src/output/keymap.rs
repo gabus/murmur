@@ -9,6 +9,11 @@
 //! and the focused client compute for the same key events, including Caps Lock's
 //! capitalization rules. The result is plain data, so it can live in async code
 //! (`xkb::Keymap` is not `Send`).
+//!
+//! Caps Lock is the only modifier state the table plans for. Any other modifier the user holds,
+//! latches or locks would change what the keys produce (or turn them into shortcuts), so
+//! [`KeyTable::blocks_typing`] makes typing wait for it, except for locks that provably change
+//! none of the planned keys (Num Lock on ordinary layouts).
 
 use std::{collections::HashMap, os::fd::OwnedFd, os::unix::fs::FileExt};
 
@@ -99,14 +104,12 @@ pub struct KeyTable {
     groups: Vec<Group>,
     /// The `Lock` (Caps Lock) bit in the compositor's modifier masks.
     lock_mask: u32,
-    /// Control, Mod1 (Alt) and Mod4 (Super): while any is held, typed letters would become
-    /// shortcuts.
-    blocking_mask: u32,
-    /// Shift and Mod5 (Level3): murmur presses these itself, so one the user holds would
-    /// change the characters.
-    level_mask: u32,
-    /// See [`KeyTable::probe_key`].
-    probe_key: Option<u32>,
+    /// Modifiers other than Caps Lock whose lock (or latch) changes none of the planned keys in
+    /// any group, e.g. Num Lock on ordinary layouts (but not on Neo, where it is a level lock).
+    /// Never includes Control, Alt (Mod1), Super (Mod4), Shift or Level3 (Mod5).
+    harmless_mask: u32,
+    /// See [`KeyTable::probe_key`]: the key and the modifiers it sets.
+    probe: Option<(u32, u32)>,
 }
 
 impl KeyTable {
@@ -144,17 +147,23 @@ impl KeyTable {
         let layouts = (0..keymap.num_layouts())
             .map(|g| keymap.layout_get_name(g).to_owned())
             .collect();
-        let groups = (0..keymap.num_layouts())
+        let groups: Vec<Group> = (0..keymap.num_layouts())
             .map(|g| build_group(keymap, g, lock_mask, blocking_mask))
             .collect();
+        let level_mask = mod_mask(keymap, xkb::MOD_NAME_SHIFT)
+            | mod_mask(keymap, xkb::MOD_NAME_ISO_LEVEL3_SHIFT);
+        let harmless_mask = harmless_locks(
+            keymap,
+            &groups,
+            lock_mask,
+            blocking_mask | level_mask | lock_mask,
+        );
         Self {
             layouts,
             groups,
             lock_mask,
-            blocking_mask,
-            level_mask: mod_mask(keymap, xkb::MOD_NAME_SHIFT)
-                | mod_mask(keymap, xkb::MOD_NAME_ISO_LEVEL3_SHIFT),
-            probe_key: probe_key(keymap, blocking_mask),
+            harmless_mask,
+            probe: probe_key(keymap, blocking_mask),
         }
     }
 
@@ -168,26 +177,38 @@ impl KeyTable {
     /// Tapping it makes the compositor report the full modifier state (group, Caps Lock, held
     /// keys), which KWin otherwise only sends after the first change.
     pub fn probe_key(&self) -> Option<u32> {
-        self.probe_key
+        self.probe.map(|(key, _)| key)
     }
 
-    /// `true` while typing now would go wrong: Control, Alt or Super is held or latched
-    /// (letters would become shortcuts), or the user holds Shift or AltGr (letters would change
-    /// case or level).
+    /// The modifiers [`KeyTable::probe_key`] sets while pressed (e.g. Mod5), or 0.
+    pub fn probe_mask(&self) -> u32 {
+        self.probe.map_or(0, |(_, mask)| mask)
+    }
+
+    /// `true` while typing now would go wrong (D-006):
+    /// - any modifier held, other than Caps Lock and harmless locks such as Num Lock: Control,
+    ///   Alt or Super would turn letters into shortcuts; Shift, AltGr or Neo's level 5 would
+    ///   change the characters;
+    /// - any modifier latched (sticky keys), including Caps Lock: it would apply to the first
+    ///   key only, which the plan can't express;
+    /// - any modifier locked other than Caps Lock and harmless locks: a locked Control
+    ///   (sticky keys) would make shortcuts, a Shift Lock or Level3/5 lock wrong characters.
     ///
     /// Only meaningful while murmur itself holds no keys, i.e. between bursts after a `sync`
     /// round trip; the compositor's modifier events also echo murmur's own Shift/AltGr presses.
-    /// Caps Lock doesn't block: [`KeyTable::plan`] accounts for it. A latched Shift/AltGr
-    /// (sticky keys) doesn't block either, since it would only clear with the next key press.
+    /// Caps Lock doesn't block: [`KeyTable::plan`] accounts for it.
     pub fn blocks_typing(&self, mods: &ModState) -> bool {
-        mods.depressed & (self.blocking_mask | self.level_mask) != 0
-            || mods.latched & self.blocking_mask != 0
+        let modeled = self.lock_mask | self.harmless_mask;
+        mods.depressed & !modeled != 0
+            || mods.latched & !self.harmless_mask != 0
+            || mods.locked & !modeled != 0
     }
 
     /// How to type `c` in the state `mods`, or `None` if the active group can't produce it.
     pub fn stroke(&self, c: char, mods: &ModState) -> Option<Stroke> {
         let group = self.groups.get(usize::try_from(mods.group).ok()?)?;
-        let lock = (mods.depressed | mods.latched | mods.locked) & self.lock_mask;
+        // A latched Caps Lock blocks typing instead (see `blocks_typing`).
+        let lock = (mods.depressed | mods.locked) & self.lock_mask;
         let caps = usize::from(lock != 0);
         let table = &group.strokes[caps];
         let sym = xkb::Keysym::from_char(c).raw();
@@ -316,12 +337,12 @@ fn modifier_key(
         .or_else(|| keycodes(keymap).find(|&k| usable(k)))
 }
 
-/// See [`KeyTable::probe_key`].
-fn probe_key(keymap: &xkb::Keymap, blocking: u32) -> Option<u32> {
+/// See [`KeyTable::probe_key`]: the evdev key and the modifiers it sets in any group.
+fn probe_key(keymap: &xkb::Keymap, blocking: u32) -> Option<(u32, u32)> {
     let everywhere = |key, syms: &[xkb::Keysym]| {
         (0..keymap.num_layouts()).all(|g| is_safe_modifier(keymap, key, g, syms, blocking))
     };
-    keycodes(keymap)
+    let key = keycodes(keymap)
         .find(|&k| everywhere(k, &[xkb::Keysym::ISO_Level3_Shift]))
         .or_else(|| {
             keymap
@@ -330,8 +351,83 @@ fn probe_key(keymap: &xkb::Keymap, blocking: u32) -> Option<u32> {
         })
         .or_else(|| {
             keycodes(keymap).find(|&k| everywhere(k, &[xkb::Keysym::Shift_L, xkb::Keysym::Shift_R]))
+        })?;
+    let mask = (0..keymap.num_layouts())
+        .map(|g| {
+            let mut state = xkb::State::new(keymap);
+            state.update_mask(0, 0, 0, 0, 0, g);
+            let _ = state.update_key(key, xkb::KeyDirection::Down);
+            state.serialize_mods(xkb::STATE_MODS_DEPRESSED)
         })
-        .map(|k| k.raw() - EVDEV_OFFSET)
+        .fold(0, |acc, m| acc | m);
+    Some((key.raw() - EVDEV_OFFSET, mask))
+}
+
+/// Modifier bits (outside `exclude`) whose lock changes none of the planned strokes in any group
+/// or Caps Lock state: locking them leaves every planned character unchanged.
+fn harmless_locks(keymap: &xkb::Keymap, groups: &[Group], lock_mask: u32, exclude: u32) -> u32 {
+    let mut harmless = 0;
+    for idx in 0..keymap.num_mods().min(32) {
+        let bit = 1u32 << idx;
+        if bit & exclude != 0 {
+            continue;
+        }
+        let unchanged = groups.iter().enumerate().all(|(g, group)| {
+            let Ok(g) = u32::try_from(g) else {
+                return false;
+            };
+            group.strokes.iter().enumerate().all(|(caps, table)| {
+                let locked = bit | if caps == 1 { lock_mask } else { 0 };
+                strokes_survive(keymap, group, g, locked, table)
+            })
+        });
+        if unchanged {
+            harmless |= bit;
+        }
+    }
+    harmless
+}
+
+/// Every stroke in `table` still produces its keysym with `locked` modifiers in `group`.
+fn strokes_survive(
+    keymap: &xkb::Keymap,
+    group: &Group,
+    g: u32,
+    locked: u32,
+    table: &HashMap<u32, Stroke>,
+) -> bool {
+    COMBOS.iter().all(|&(want_shift, want_level3)| {
+        let held: Vec<u32> = [(want_shift, group.shift), (want_level3, group.level3)]
+            .into_iter()
+            .filter_map(|(need, key)| if need { key } else { None })
+            .collect();
+        let mut state = xkb::State::new(keymap);
+        state.update_mask(0, 0, locked, 0, 0, g);
+        for &k in &held {
+            let _ = state.update_key(xkb::Keycode::new(k + EVDEV_OFFSET), xkb::KeyDirection::Down);
+        }
+        table
+            .iter()
+            .filter(|(sym, s)| (s.shift, s.level3) == (want_shift, want_level3) && looked_up(**sym))
+            .all(|(&sym, s)| {
+                state
+                    .key_get_one_sym(xkb::Keycode::new(s.key + EVDEV_OFFSET))
+                    .raw()
+                    == sym
+            })
+    })
+}
+
+/// Whether [`KeyTable::stroke`] ever looks up `sym`: it is the keysym (or the Unicode keysym)
+/// of a printable character. Other keysyms in the table (`KP_Home`, `BackSpace`, ...) never
+/// get typed, so a modifier that only changes those is harmless.
+fn looked_up(sym: u32) -> bool {
+    let Some(c) = char::from_u32(xkb::keysym_to_utf32(xkb::Keysym::new(sym))) else {
+        return false;
+    };
+    c != '\0'
+        && !c.is_control()
+        && (xkb::Keysym::from_char(c).raw() == sym || 0x0100_0000 | u32::from(c) == sym)
 }
 
 /// Keycodes that have an evdev equivalent.
@@ -512,8 +608,22 @@ mod tests {
         assert_eq!(plan.events.len(), 6);
     }
 
+    fn keymap_variant(layout: &str, variant: &str, options: &str) -> xkb::Keymap {
+        let ctx = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        xkb::Keymap::new_from_names(
+            &ctx,
+            "evdev",
+            "pc105",
+            layout,
+            variant,
+            Some(options.to_owned()),
+            xkb::COMPILE_NO_FLAGS,
+        )
+        .expect("test keymap compiles")
+    }
+
     #[test]
-    fn held_modifiers_block_typing_but_caps_lock_does_not() {
+    fn modifier_state_blocks_typing_unless_it_is_planned_for() {
         let km = keymap("de");
         let t = KeyTable::new(&km);
         let bit = |name| 1 << km.mod_get_index(name);
@@ -525,21 +635,26 @@ mod tests {
             latched: bit(name),
             ..ModState::default()
         };
-        let shortcut = [xkb::MOD_NAME_CTRL, xkb::MOD_NAME_ALT, xkb::MOD_NAME_LOGO];
-        for name in shortcut {
+        let locked = |name| ModState {
+            locked: bit(name),
+            ..ModState::default()
+        };
+        // Control/Alt/Super would turn letters into shortcuts, however they are active
+        // (a locked Control comes from sticky keys' lock mode). Shift/AltGr would change the
+        // characters: held, latched (it would apply to the first key only) or locked.
+        for name in [
+            xkb::MOD_NAME_CTRL,
+            xkb::MOD_NAME_ALT,
+            xkb::MOD_NAME_LOGO,
+            xkb::MOD_NAME_SHIFT,
+            xkb::MOD_NAME_ISO_LEVEL3_SHIFT,
+        ] {
             assert!(t.blocks_typing(&held(name)), "held {name} should block");
             assert!(
                 t.blocks_typing(&latched(name)),
                 "latched {name} should block"
             );
-        }
-        // The user's own Shift/AltGr would change the typed characters.
-        for name in [xkb::MOD_NAME_SHIFT, xkb::MOD_NAME_ISO_LEVEL3_SHIFT] {
-            assert!(t.blocks_typing(&held(name)), "held {name} should block");
-            assert!(
-                !t.blocks_typing(&latched(name)),
-                "latched {name} clears only on a key"
-            );
+            assert!(t.blocks_typing(&locked(name)), "locked {name} should block");
         }
         let caps = ModState {
             depressed: bit(xkb::MOD_NAME_CAPS),
@@ -550,6 +665,163 @@ mod tests {
             !t.blocks_typing(&caps),
             "Caps Lock is planned for, not waited out"
         );
+        assert!(
+            t.blocks_typing(&latched(xkb::MOD_NAME_CAPS)),
+            "a latched Caps Lock would apply to the first key only"
+        );
+        // Num Lock only affects the keypad, which the plan never uses.
+        let num = ModState {
+            depressed: bit(xkb::MOD_NAME_NUM),
+            locked: bit(xkb::MOD_NAME_NUM),
+            ..ModState::default()
+        };
+        assert!(
+            !t.blocks_typing(&num),
+            "Num Lock changes no planned key on de"
+        );
+        assert!(!t.blocks_typing(&ModState::default()));
+    }
+
+    #[test]
+    fn num_lock_does_not_hold_text_on_common_layouts() {
+        // KDE can turn Num Lock on at login: it must not hold dictation back forever.
+        for (layout, variant) in [
+            ("us", ""),
+            ("de", ""),
+            ("fr", ""),
+            ("gb", ""),
+            ("es", ""),
+            ("it", ""),
+            ("pl", ""),
+            ("cz", ""),
+            ("se", ""),
+            ("ch", ""),
+            ("tr", ""),
+            ("jp", ""),
+            ("us", "intl"),
+            ("us,lt", ""),
+            ("us,ru", ""),
+            ("fr", "bepo"),
+        ] {
+            let km = keymap_variant(layout, variant, "");
+            let t = KeyTable::new(&km);
+            let lock = |name| 1u32 << km.mod_get_index(name);
+            let mods = ModState {
+                locked: lock(xkb::MOD_NAME_NUM) | lock(xkb::MOD_NAME_CAPS),
+                ..ModState::default()
+            };
+            assert!(!t.blocks_typing(&mods), "{layout}({variant})");
+        }
+    }
+
+    #[test]
+    fn neo_level5_and_its_num_lock_level_lock_block_typing() {
+        // Neo's level 5 (Mod3) and its level-4 lock (Num Lock's Mod2) turn letters into
+        // navigation keys, Return, BackSpace and Delete.
+        let km = keymap_variant("de", "neo", "");
+        let t = KeyTable::new(&km);
+        let bit = |name| 1u32 << km.mod_get_index(name);
+        let held_mod3 = ModState {
+            depressed: bit("Mod3"),
+            ..ModState::default()
+        };
+        assert!(t.blocks_typing(&held_mod3), "held level 5 should block");
+        let num_locked = ModState {
+            locked: bit(xkb::MOD_NAME_NUM),
+            ..ModState::default()
+        };
+        assert!(
+            t.blocks_typing(&num_locked),
+            "Neo's level lock should block"
+        );
+    }
+
+    /// Replays `events` through an `xkb::State` in `mods`, like the compositor and the focused
+    /// client do: returns the text the client sees, whether Control/Alt/Super was ever active
+    /// and the depressed modifiers and group at the end.
+    fn replay(km: &xkb::Keymap, events: &[KeyEvent], mods: &ModState) -> (String, bool, u32, u32) {
+        let shortcut = mod_mask(km, xkb::MOD_NAME_CTRL)
+            | mod_mask(km, xkb::MOD_NAME_ALT)
+            | mod_mask(km, xkb::MOD_NAME_LOGO);
+        let mut state = xkb::State::new(km);
+        state.update_mask(mods.depressed, mods.latched, mods.locked, 0, 0, mods.group);
+        let mut text = String::new();
+        let mut shortcuts = false;
+        for e in events {
+            let key = xkb::Keycode::new(e.key + EVDEV_OFFSET);
+            if e.pressed {
+                text.push_str(&state.key_get_utf8(key));
+                let _ = state.update_key(key, xkb::KeyDirection::Down);
+            } else {
+                let _ = state.update_key(key, xkb::KeyDirection::Up);
+            }
+            shortcuts |= state.serialize_mods(xkb::STATE_MODS_EFFECTIVE) & shortcut != 0;
+        }
+        (
+            text,
+            shortcuts,
+            state.serialize_mods(xkb::STATE_MODS_DEPRESSED),
+            state.serialize_layout(xkb::STATE_LAYOUT_EFFECTIVE),
+        )
+    }
+
+    #[test]
+    fn every_typeable_character_round_trips_through_xkb() {
+        let mut candidates: Vec<char> = (0x20u32..0x250)
+            .chain(0x370..0x530)
+            .chain(0x2010..0x2030)
+            .chain(0x20a0..0x20c0)
+            .filter_map(char::from_u32)
+            .filter(|c| !c.is_control())
+            .collect();
+        candidates.extend("ąčęėįšųūž€«»„“”‘’–—…".chars());
+        let configs = [
+            ("us", "", ""),
+            ("de", "", ""),
+            ("fr", "", ""),
+            ("us,lt", "", ""),
+            ("us,ru", "", "grp:lshift_toggle"),
+            ("cz", "", ""),
+            ("us", "intl", ""),
+            ("us", "dvorak", ""),
+            ("fr", "bepo", ""),
+            ("de", "neo", ""),
+            ("tr", "", ""),
+            ("de", "", "lv3:ralt_alt"),
+            ("de,us", "", "grp:shifts_toggle"),
+        ];
+        let mut problems = Vec::new();
+        for (layout, variant, options) in configs {
+            let km = keymap_variant(layout, variant, options);
+            let t = KeyTable::new(&km);
+            let lock = |name| 1u32 << km.mod_get_index(name);
+            for group in 0..km.num_layouts() {
+                for locked in [0, lock(xkb::MOD_NAME_CAPS), lock(xkb::MOD_NAME_NUM)] {
+                    let mods = ModState {
+                        group,
+                        locked,
+                        ..ModState::default()
+                    };
+                    if t.blocks_typing(&mods) {
+                        continue; // Waited out, never planned.
+                    }
+                    for &c in &candidates {
+                        let plan = t.plan(&c.to_string(), &mods);
+                        if plan.unmapped > 0 {
+                            continue;
+                        }
+                        let got = replay(&km, &plan.events, &mods);
+                        if got != (c.to_string(), false, 0, group) {
+                            problems.push(format!(
+                                "{layout}({variant}) [{options}] group {group} locked {locked:#x}: \
+                                 {c:?} -> {got:?}"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(problems.is_empty(), "{}", problems.join("\n"));
     }
 
     #[test]
