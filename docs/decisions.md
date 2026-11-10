@@ -132,3 +132,13 @@ shared libraries, fully offline. Dev builds keep sherpa-onnx's prebuilt static l
 - Cost: the first build compiles ORT (8 min of a 10.5 min cold build on 16 threads);
   flatpak-builder caches it.
 - Spec: README → Toolset, Build & run; `docs/packaging.md`.
+
+### D-015 · 2026-11-10 · maintainer
+**v0.1 is self-hosted: a GitHub Release with the `.flatpak` bundle, plus a signed Flatpak repo
+on GitHub Pages with a `.flatpakref` for one-click install. The README discloses that the code
+was written with AI assistance.**
+- Why: Flathub's Generative AI policy (docs.flathub.org → Requirements → Generative AI policy,
+  checked 2026-11-10). Manifests must contain no AI-generated content, AI-generated code must
+  be disclosed and may be rejected, and AI agents must not open submission PRs. Flathub
+  remains possible later if the maintainer writes that manifest and submits it personally.
+- Spec: README → Goals (one-click install), Install.

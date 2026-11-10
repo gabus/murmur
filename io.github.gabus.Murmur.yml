@@ -15,6 +15,10 @@ finish-args:
   - --socket=pulseaudio                         # microphone
   - --share=network                             # model download only
   - --talk-name=org.kde.StatusNotifierWatcher   # tray icon
+  # cpal's pure-Rust PulseAudio client sends an empty auth cookie when none is
+  # found (the sandbox has none); pipewire-pulse rejects that with "Invalid", so
+  # point it at a 256-byte zero cookie like libpulse would send.
+  - --env=PULSE_COOKIE=/app/share/murmur/pulse-cookie
 cleanup:
   - /include
   - /lib/cmake
@@ -36,6 +40,7 @@ modules:
     build-commands:
       - cargo --offline build --release --locked --no-default-features --features sherpa-shared
       - install -Dm755 target/release/murmur -t /app/bin
+      - install -d /app/share/murmur && head -c 256 /dev/zero > /app/share/murmur/pulse-cookie
       - install -Dm644 data/io.github.gabus.Murmur.desktop -t /app/share/applications
       - install -Dm644 data/io.github.gabus.Murmur.metainfo.xml -t /app/share/metainfo
       - install -Dm644 data/icons/io.github.gabus.Murmur.svg -t /app/share/icons/hicolor/scalable/apps

@@ -241,10 +241,12 @@ a second EIS client. `spectacle -b -n -f -o` on the nested bus and display takes
     are keyed by app ID, which is the same for both).
   - GlobalShortcuts: `ListShortcuts` returns the existing Meta+H binding, and `BindShortcuts`
     returns in about 1 ms with no dialog.
-  - Mic: cpal's PulseAudio host is *available* (`PULSE_SERVER=unix:/run/flatpak/pulse/native`)
-    but fails to connect. Not root-caused yet; probably the pure-Rust client's auth handshake.
-    cpal falls back to **ALSA (runtime pulse plugin)**, which works: open in about 38 ms,
-    213-sample callbacks. The audio module must try PulseAudio, then ALSA, and log why.
+  - Mic: cpal's pure-Rust PulseAudio client failed with `server error: Invalid`, and cpal fell
+    back to ALSA. **Root cause:** with no cookie file (the sandbox has none) the client sends an
+    empty auth cookie, which pipewire-pulse rejects. libpulse sends 256 zero bytes instead.
+    Reproduced in the toolbox with `HOME` pointing at an empty directory.
+    **Fix:** the manifest ships a 256-byte zero cookie and sets `PULSE_COOKIE`. Tested in the
+    Flatpak: `host=PulseAudio device=ArctisX PnP Microphone Mono`.
 
 ## Go / no-go
 

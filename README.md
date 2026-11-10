@@ -11,8 +11,8 @@ typing normally the whole time.
 
 - **Mac-like dictation.** Press a shortcut, then speak. You see the transcription
   as you speak, and text appears in the focused app.
-- **One-click install.** Ships as a Flatpak (Flathub). No compilers, no `input`
-  group, no udev rules, no `sudo`.
+- **One-click install.** Ships as a Flatpak (a `.flatpakref` from the project's own repo,
+  [D-015](docs/decisions.md)). No compilers, no `input` group, no udev rules, no `sudo`.
 - **Wayland only.** Uses xdg-desktop-portals and no X11 fallbacks.
 - **Lightweight.** Nothing is loaded while idle. The mic is opened only while
   listening. The model is loaded on demand and unloaded after a period of
