@@ -204,7 +204,7 @@ slint::slint! {
     }
 
     export component SetupWindow inherits Window {
-        title: "murmur";
+        title: "Murmur";
         // Fixed size that follows the content: Slint resizes the window when these change.
         min-width: 520px;
         max-width: 520px;
@@ -275,13 +275,13 @@ slint::slint! {
             VerticalLayout {
                 spacing: 4px;
                 Text {
-                    text: "Welcome to murmur";
+                    text: "Welcome to Murmur";
                     font-size: Theme.title-size;
                     font-weight: 600;
                     color: Palette.foreground;
                 }
                 Text {
-                    text: "Set up these three things once. After that, murmur waits in the tray.";
+                    text: "Set up these three things once. After that, Murmur waits in the tray.";
                     color: Theme.muted;
                     wrap: word-wrap;
                 }
@@ -342,7 +342,7 @@ slint::slint! {
             VerticalLayout {
                 spacing: 4px;
                 CheckBox {
-                    text: "Start murmur when I log in";
+                    text: "Start Murmur when I log in";
                     checked <=> root.autostart;
                     toggled => { root.autostart-toggled(self.checked); }
                 }
@@ -476,7 +476,7 @@ slint::slint! {
     }
 
     export component SettingsWindow inherits Window {
-        title: "murmur";
+        title: "Murmur";
         min-width: 520px;
         max-width: 520px;
         min-height: main.preferred-height;
@@ -638,7 +638,7 @@ slint::slint! {
                         horizontal-stretch: 1;
                         spacing: 4px;
                         CheckBox {
-                            text: "Start murmur when I log in";
+                            text: "Start Murmur when I log in";
                             checked <=> root.autostart;
                             toggled => { root.autostart-toggled(self.checked); }
                         }

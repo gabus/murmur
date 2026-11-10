@@ -70,7 +70,7 @@ impl ksni::Tray for MurmurTray {
     }
 
     fn title(&self) -> String {
-        "murmur".into()
+        "Murmur".into()
     }
 
     fn category(&self) -> ksni::Category {
@@ -140,7 +140,7 @@ impl ksni::Tray for MurmurTray {
             None => description,
         };
         ksni::ToolTip {
-            title: "murmur".into(),
+            title: "Murmur".into(),
             description,
             ..Default::default()
         }

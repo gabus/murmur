@@ -4,7 +4,7 @@
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
 
-  <name>murmur</name>
+  <name>Murmur</name>
   <summary>Voice dictation for Wayland</summary>
   <developer id="io.github.gabus">
     <name>gabus</name>
@@ -12,7 +12,7 @@
 
   <description>
     <p>
-      murmur types what you say into whatever app has focus. Press a shortcut, talk, and your
+      Murmur types what you say into whatever app has focus. Press a shortcut, talk, and your
       words appear at the cursor about a second behind your voice. Press the shortcut again to
       stop. You can keep typing and clicking normally the whole time.
     </p>
@@ -27,7 +27,7 @@
       <li>The speech model is loaded on demand and freed again when idle</li>
     </ul>
     <p>
-      murmur needs a Wayland desktop with the GlobalShortcuts and RemoteDesktop portals, such as
+      Murmur needs a Wayland desktop with the GlobalShortcuts and RemoteDesktop portals, such as
       KDE Plasma 6.1 or later, or GNOME with the AppIndicator extension for the tray icon.
     </p>
   </description>

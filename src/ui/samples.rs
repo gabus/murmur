@@ -118,7 +118,7 @@ pub fn unsupported_desktop() -> UiState {
     s.typing = TypingState::Unavailable(
         "This desktop can't let apps type (needs Plasma 6.1+ or GNOME 46+).".into(),
     );
-    s.autostart_error = Some("The desktop refused to add murmur to autostart.".into());
+    s.autostart_error = Some("The desktop refused to add Murmur to autostart.".into());
     s
 }
 

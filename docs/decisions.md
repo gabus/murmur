@@ -151,3 +151,12 @@ was written with AI assistance.**
 - GNOME's GlobalShortcuts portal is v1 (no ConfigureShortcuts), so there the shortcut can
   only be changed in GNOME Settings.
 - Spec: README → First run; Supported desktops.
+
+### D-017 · 2026-11-10 · maintainer
+**The product name is "Murmur" (capital M)** in everything users see: window titles, the setup
+and settings text, the tray, notifications, the desktop entry, the metainfo, the landing page
+and the README title.
+- The command (`murmur`), app ID (`io.github.gabus.Murmur`), paths and logs are unchanged.
+- The tray and app icons are being replaced by a distinct brand mark (the current tray icon
+  looks like a microphone-settings applet). Options are in `docs/icon-options/`; the
+  maintainer picks one.

@@ -244,7 +244,7 @@ impl App {
                     if self.state == State::Listening {
                         error!(%why, "microphone failed while listening");
                         self.set_status(Status::Error(ErrorKind::Microphone, format!("Microphone error: {why}")));
-                        self.notifier.error("murmur: microphone lost", &why);
+                        self.notifier.error("Murmur: microphone lost", &why);
                         self.stop().await;
                     }
                 }
@@ -315,7 +315,7 @@ impl App {
             Outcome::Failed(why) => {
                 // The setup page shows download errors itself.
                 if !self.setup_open() {
-                    self.notifier.error("murmur: model download failed", &why);
+                    self.notifier.error("Murmur: model download failed", &why);
                 }
                 self.set_status(Status::Error(
                     ErrorKind::Model,
@@ -337,7 +337,7 @@ impl App {
             };
             info!(%why, "can't start dictation");
             self.set_status(Status::Error(ErrorKind::Model, why.clone()));
-            self.notifier.error("murmur: no speech model yet", &why);
+            self.notifier.error("Murmur: no speech model yet", &why);
             return;
         }
         self.unload_at = None;
@@ -379,7 +379,7 @@ impl App {
         error!(error = %failure, "cannot open microphone");
         self.asr.send(AsrInput::End);
         self.state = State::Finishing;
-        self.notifier.error("murmur: no microphone", &failure);
+        self.notifier.error("Murmur: no microphone", &failure);
         self.set_status(Status::Error(ErrorKind::Microphone, failure));
     }
 
@@ -424,8 +424,8 @@ impl App {
                 };
                 self.shortcut_label.send_replace(None);
                 self.report_shortcut_problem(
-                    "murmur: no global shortcut",
-                    "No shortcut is set. Click the tray icon to dictate, or set one in murmur's settings.",
+                    "Murmur: no global shortcut",
+                    "No shortcut is set. Click the tray icon to dictate, or set one in Murmur's settings.",
                 );
             }
             HotkeyEvent::Lost(why) => {
@@ -434,8 +434,8 @@ impl App {
                 self.shortcut.can_change = self.hotkey_events.is_some();
                 self.shortcut_label.send_replace(None);
                 self.report_shortcut_problem(
-                    "murmur: shortcut unavailable",
-                    "The global shortcut stopped working. Click the tray icon to dictate, or set it again in murmur's settings.",
+                    "Murmur: shortcut unavailable",
+                    "The global shortcut stopped working. Click the tray icon to dictate, or set it again in Murmur's settings.",
                 );
             }
             HotkeyEvent::ConfigureFailed(why) => {
@@ -471,7 +471,7 @@ impl App {
                     format!("Speech model unavailable: {e}"),
                 ));
                 self.notifier
-                    .error("murmur: speech model missing", &format!("{e}"));
+                    .error("Murmur: speech model missing", &format!("{e}"));
                 if self.state == State::Listening {
                     // Don't keep the mic open for nothing.
                     self.stop().await;
@@ -513,7 +513,7 @@ impl App {
                 ));
                 if !self.setup_open() {
                     self.notifier.error(
-                        "murmur can't type",
+                        "Murmur can't type",
                         "Permission to type was denied. Dictate again to be asked once more.",
                     );
                 }
@@ -532,7 +532,7 @@ impl App {
                     format!("Typing unavailable: {why}"),
                 ));
                 if !self.setup_open() {
-                    self.notifier.error("murmur can't type", &why);
+                    self.notifier.error("Murmur can't type", &why);
                 }
             }
             OutputEvent::Unmapped { count } => {

@@ -17,7 +17,7 @@ use super::{
 };
 
 /// Name murmur announces in the EI handshake.
-const CLIENT_NAME: &str = "murmur";
+const CLIENT_NAME: &str = "Murmur";
 /// How long the handshake may take.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long to wait for a usable keyboard after the handshake (normally a few ms).

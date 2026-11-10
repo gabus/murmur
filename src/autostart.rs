@@ -7,7 +7,7 @@ use tracing::info;
 pub async fn set(enabled: bool) -> Result<bool, String> {
     crate::portal::register_host_app().await;
     let request = Background::request()
-        .reason("Start murmur when you log in, so the dictation shortcut is always ready.")
+        .reason("Start Murmur when you log in, so the dictation shortcut is always ready.")
         .auto_start(enabled)
         .command(["murmur"])
         .dbus_activatable(false);

@@ -1,4 +1,4 @@
-# murmur
+# Murmur
 
 Live voice dictation for Linux on Wayland. Press a key, talk, and your words are
 typed into whatever app has focus. Press the key again to stop. You can keep

@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
-Name=murmur
+Name=Murmur
 Comment=Voice dictation for Wayland
 Exec=murmur
 Icon=io.github.gabus.Murmur

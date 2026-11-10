@@ -102,7 +102,7 @@ pub fn typing(t: &TypingState) -> TypingView {
     let (status, detail, button) = match t {
         TypingState::Unknown => (
             Status::Todo,
-            Detail::info("Lets murmur type your words into other apps."),
+            Detail::info("Lets Murmur type your words into other apps."),
             "Allow…",
         ),
         TypingState::Asking => (
@@ -112,12 +112,12 @@ pub fn typing(t: &TypingState) -> TypingView {
         ),
         TypingState::Granted => (
             Status::Done,
-            Detail::info("murmur can type into other apps."),
+            Detail::info("Murmur can type into other apps."),
             "",
         ),
         TypingState::Denied => (
             Status::Failed,
-            Detail::error("Not allowed. murmur can't type without it."),
+            Detail::error("Not allowed. Murmur can't type without it."),
             "Try again",
         ),
         TypingState::Unavailable(msg) => (Status::Failed, Detail::error(msg.clone()), ""),
