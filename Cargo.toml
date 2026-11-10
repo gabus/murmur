@@ -13,7 +13,7 @@ reis = { version = "0.7", features = ["tokio"] }
 rustix = { version = "1", features = ["time"] }
 sherpa-onnx = "2.0.1"
 thiserror = "2"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "net"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 xkbcommon = "0.9"
