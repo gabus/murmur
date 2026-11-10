@@ -178,14 +178,14 @@ checksums pinned in `src/models.rs`. Measurements are in [docs/benchmarks.md](do
 | Setup & Settings windows | [Slint](https://slint.dev), software renderer: no GPU permission ([D-001](docs/decisions.md)) |
 | Audio | `cpal`, or `libpulse-binding` if cpal misbehaves inside the sandbox |
 | ASR + VAD | [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) via `sherpa-rs` (to evaluate) or own FFI to its C API |
-| Inference | onnxruntime (bundled by sherpa-onnx), CPU |
+| Inference | onnxruntime, CPU. Dev builds: sherpa-onnx's prebuilt static libs (Cargo feature `sherpa-static`, default). Flatpak: ONNX Runtime and the sherpa-onnx C API built from source as shared libs (`sherpa-shared`) |
 | Config | `serde` + `toml` |
 | Model download | `reqwest` + `sha2` |
 | Logging | `tracing` |
-| Packaging | Flatpak: `org.freedesktop.Platform` / `Sdk` 26.08 + `rust-stable` extension, `flatpak-cargo-generator` |
+| Packaging | Flatpak: `org.freedesktop.Platform` / `Sdk` 26.08 + `rust-stable` extension, `flatpak-cargo-generator`. Builds offline, everything from source ([docs/packaging.md](docs/packaging.md)) |
 | App ID | `io.github.gabus.Murmur` |
 
-### Flatpak permissions (planned)
+### Flatpak permissions
 
 ```
 --socket=wayland
@@ -272,14 +272,23 @@ $T cargo test --features dev-harness --test e2e_nested_kwin -- --ignored   # nee
 $T cargo run --release --example simulate -- --model parakeet-v3 file.wav   # engine on WAVs
 $T cargo run --example ui_shots -- /tmp/shots                                # window screenshots
 
-# Flatpak (from the host)
-flatpak run org.flatpak.Builder --user --install --force-clean \
+# after every Cargo.lock change: refresh the vendored crate list for the Flatpak
+$T flatpak/update-cargo-sources.sh
+
+# Flatpak (from the host): offline, everything from source
+flatpak run org.flatpak.Builder --user --install --force-clean --sandbox \
   --state-dir=.flatpak-builder build-dir io.github.gabus.Murmur.yml
 flatpak run io.github.gabus.Murmur
 ```
 
 The `dev-harness` cargo feature (never shipped) adds `MURMUR_DEV_AUDIO=<wav>` (a WAV instead of
 the mic), `MURMUR_DEV_EIS=kwin-direct`, `MURMUR_DEV_NO_HOTKEY` and `MURMUR_DEV_AUTORUN`.
+
+The first Flatpak build compiles ONNX Runtime and sherpa-onnx (about 10 minutes in total on
+the maintainer's 16-thread machine). flatpak-builder caches each module in `.flatpak-builder/`,
+so later builds only rebuild murmur unless those modules change. CI builds the same bundle on
+every push (`.github/workflows/flatpak.yml`). Details and Flathub notes:
+[docs/packaging.md](docs/packaging.md).
 
 ## Implementation stages
 

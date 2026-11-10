@@ -78,12 +78,14 @@ Goal: `murmur` daemon, hotkey toggles listening, phrases get typed.
 
 ## Stage 5: Packaging
 
-- [ ] Flatpak manifest `io.github.gabus.Murmur.yml` (Platform/Sdk 26.08, rust-stable)
-- [ ] `flatpak-cargo-generator` for offline cargo sources
-- [ ] Decide how onnxruntime / sherpa-onnx are built (from source likely required for Flathub)
-- [ ] AppStream metainfo, `.desktop` file, icons (scalable + 128px)
-- [ ] Minimal permissions (see README); no `--device=all`, no `--filesystem=host`
-- [ ] CI: GitHub Actions building the Flatpak bundle on push
+- [x] Flatpak manifest `io.github.gabus.Murmur.yml` (Platform/Sdk 26.08, rust-stable): offline `--sandbox` build, installed and smoke-tested on KDE (`docs/packaging.md`)
+- [x] `flatpak-cargo-generator` for offline cargo sources (`flatpak/update-cargo-sources.sh`; rerun after every `Cargo.lock` change)
+- [x] Decide how onnxruntime / sherpa-onnx are built → both from source, shared, in the Flatpak; dev builds keep the prebuilt static libs (D-014)
+- [x] AppStream metainfo, `.desktop` file, icons (scalable + 128px)
+- [x] Minimal permissions (see README); no `--device=all`, no `--filesystem=host`
+- [x] CI: GitHub Actions building the Flatpak bundle on push (`.github/workflows/flatpak.yml`; not run yet)
+- [ ] Run the CI workflow once on GitHub and check the uploaded bundle
+- [ ] Build and test the Flatpak on aarch64 (Flathub builds x86_64 and aarch64)
 - [x] License chosen and added (GPL-3.0-or-later, D-013)
 
 ## Stage 6: Release
@@ -91,7 +93,7 @@ Goal: `murmur` daemon, hotkey toggles listening, phrases get typed.
 - [ ] Tag `v0.1.0`; GitHub release with `.flatpak` bundle + `.flatpakref`
 - [ ] Install instructions in README
 - [ ] Screenshots / short GIF
-- [ ] Submit to Flathub; iterate on review
+- [ ] Submit to Flathub; iterate on review. Flathub's generative-AI policy bans AI-generated or AI-assisted content in Flathub manifests and AI-opened submission PRs, so the maintainer writes those (see `docs/packaging.md`)
 
 ## Stage 7: Later
 
@@ -105,7 +107,7 @@ Goal: `murmur` daemon, hotkey toggles listening, phrases get typed.
 - [ ] Does the RemoteDesktop portal remember permission across restarts on KDE / GNOME? (KDE: yes, see findings)
 - [ ] Does the GlobalShortcuts portal report key release (needed for hold-to-talk)?
 - [x] Is `sherpa-rs` complete enough for streaming + VAD, or do we need our own bindings? → use the official `sherpa-onnx` crate
-- [ ] Will Flathub accept prebuilt onnxruntime, or must it be built from source?
+- [x] Will Flathub accept prebuilt onnxruntime, or must it be built from source? → from source (Flathub requirements); done (D-014)
 - [x] Re-check CPU cost: can Parakeet re-run every ~0.5 s on CPU without noticeable load? → yes on a 7700X: 16 % of real time (`docs/benchmarks.md`); weaker CPUs TBD
 - [ ] Parakeet v3 auto language detection during re-check: do consecutive runs flip language on short/ambiguous starts? If so, add a "language: auto / fixed" setting. (en→de→en test: no flips; real short Lithuanian utterances untested)
 - [ ] int8 vs. full-precision Parakeet v3: accuracy and speed difference on CPU.

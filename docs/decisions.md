@@ -119,3 +119,15 @@ restored.**
 - Why: the maintainer's choice. Copyleft keeps forks open. Slint is then used under its
   GPLv3 terms, so no attribution badge is needed.
 - Spec: README → License; `LICENSE`; Cargo `license`; AppStream `project_license`.
+
+### D-014 · 2026-11-10 · Claude (Stage 5; maintainer informed)
+**The Flatpak builds ONNX Runtime (1.28.3, CPU) and the sherpa-onnx 2.0.1 C API from source as
+shared libraries, fully offline. Dev builds keep sherpa-onnx's prebuilt static libs.**
+- Why: Flathub requires everything to be built from source, and its builders have no network.
+  The `sherpa-onnx` crate's `shared` feature with `SHERPA_ONNX_LIB_DIR` links an installed
+  library and never downloads, so the Flatpak needs no patches to the crate. ORT 1.28.3 rather
+  than 1.28.2 (what sherpa-onnx 2.0.1 ships with): a patch release with memory-safety fixes and
+  the same ABI, which matters because models are downloaded files.
+- Cost: the first build compiles ORT (8 min of a 10.5 min cold build on 16 threads);
+  flatpak-builder caches it.
+- Spec: README → Toolset, Build & run; `docs/packaging.md`.
