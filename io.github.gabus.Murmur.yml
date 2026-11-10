@@ -1,0 +1,41 @@
+# murmur Flatpak manifest.
+# DEVELOPMENT VERSION: crates and sherpa-onnx's prebuilt static libs are fetched with
+# network access at build time. Stage 5 replaces this with offline cargo sources
+# (flatpak-cargo-generator) and onnxruntime/sherpa-onnx built from source for Flathub.
+#   flatpak run org.flatpak.Builder --user --install --force-clean \
+#     --state-dir=.flatpak-builder build-dir io.github.gabus.Murmur.yml
+app-id: io.github.gabus.Murmur
+runtime: org.freedesktop.Platform
+runtime-version: '26.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: murmur
+finish-args:
+  - --socket=wayland
+  - --socket=pulseaudio                         # microphone
+  - --share=network                             # model download only
+  - --talk-name=org.kde.StatusNotifierWatcher   # tray icon
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+modules:
+  - name: murmur
+    buildsystem: simple
+    build-options:
+      build-args:
+        - --share=network
+      env:
+        CARGO_HOME: /run/build/murmur/cargo
+    build-commands:
+      - cargo build --release --locked
+      - install -Dm755 target/release/murmur /app/bin/murmur
+    sources:
+      - type: dir
+        path: .
+        skip:
+          - target
+          - spike
+          - build-dir
+          - .flatpak-builder
+          - .claude
+          - .idea
