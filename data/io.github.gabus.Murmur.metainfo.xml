@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.gabus.Murmur</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+
+  <name>murmur</name>
+  <summary>Voice dictation for Wayland</summary>
+  <developer id="io.github.gabus">
+    <name>gabus</name>
+  </developer>
+
+  <description>
+    <p>
+      murmur types what you say into whatever app has focus. Press a shortcut, talk, and your
+      words appear at the cursor about a second behind your voice. Press the shortcut again to
+      stop. You can keep typing and clicking normally the whole time.
+    </p>
+    <p>
+      Speech recognition runs entirely on your computer. The only network access is the one-time
+      download of a speech model. No audio or text leaves your machine.
+    </p>
+    <ul>
+      <li>Works in every app: the shortcut and typing go through the desktop's portals</li>
+      <li>Punctuation and capitalization from the default model, in 25 European languages</li>
+      <li>A tray icon shows when it is listening, and the microphone is open only while dictating</li>
+      <li>The speech model is loaded on demand and freed again when idle</li>
+    </ul>
+    <p>
+      murmur needs a Wayland desktop with the GlobalShortcuts and RemoteDesktop portals, such as
+      KDE Plasma 6.1 or later, or GNOME with the AppIndicator extension for the tray icon.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">io.github.gabus.Murmur.desktop</launchable>
+  <provides>
+    <binary>murmur</binary>
+  </provides>
+
+  <url type="homepage">https://github.com/gabus/murmur</url>
+  <url type="bugtracker">https://github.com/gabus/murmur/issues</url>
+  <url type="vcs-browser">https://github.com/gabus/murmur</url>
+
+  <supports>
+    <control>keyboard</control>
+    <control>pointing</control>
+    <control>voice</control>
+  </supports>
+
+  <branding>
+    <color type="primary" scheme_preference="light">#f3b6b6</color>
+    <color type="primary" scheme_preference="dark">#7a1f1f</color>
+  </branding>
+
+  <content_rating type="oars-1.1"/>
+
+  <releases>
+    <release version="0.1.0" date="2026-11-10" type="development">
+      <description>
+        <p>First development build.</p>
+      </description>
+    </release>
+  </releases>
+</component>

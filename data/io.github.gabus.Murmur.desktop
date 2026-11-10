@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=murmur
+Comment=Voice dictation for Wayland
+Exec=murmur
+Icon=io.github.gabus.Murmur
+Terminal=false
+Categories=Utility;Accessibility;
+Keywords=dictation;speech;voice;speech-to-text;transcription;microphone;
+StartupNotify=false
+X-GNOME-UsesNotifications=true
