@@ -17,4 +17,5 @@ pub mod output;
 pub mod paths;
 pub mod portal;
 pub mod tray;
+pub mod ui;
 pub mod vad;
