@@ -11,8 +11,10 @@ use tokio::{
 use tracing::{debug, trace, warn};
 
 use super::{
-    EisSource, OutputEvent,
+    EisSource, OutputEvent, PasteKeys,
+    clipboard::Offer,
     eis::{EisConnection, EisError, Update},
+    paste::{self, Outcome},
     source::{self, SessionHandle, SourceError},
 };
 
@@ -32,6 +34,7 @@ pub(super) enum Cmd {
     Type(String),
     Flush(oneshot::Sender<()>),
     Retry,
+    PasteKeys(PasteKeys),
 }
 
 /// What waits in the queue, in order.
@@ -78,6 +81,11 @@ struct Actor {
     waiting_since: Option<Instant>,
     /// `OutputEvent::Waiting(true)` was sent and not yet answered by `Waiting(false)`.
     waiting_announced: bool,
+    /// The shortcut that pastes what the layout can't type.
+    paste_keys: PasteKeys,
+    /// The clipboard saved for pasting the text at the front of the queue, taken before the
+    /// `sync` round trip that checks the user's modifiers (see [`paste`]).
+    saved_clipboard: Option<Result<Offer, &'static str>>,
 }
 
 enum Wake {
@@ -88,10 +96,13 @@ enum Wake {
     GraceOver,
 }
 
+/// Runs the task. `eager`: connect right away, so the first word doesn't wait for session
+/// setup (or the permission dialog); otherwise wait for [`Cmd::Retry`] or text.
 pub(super) async fn run(
     source: EisSource,
     events: mpsc::UnboundedSender<OutputEvent>,
     rx: mpsc::UnboundedReceiver<Cmd>,
+    eager: bool,
 ) {
     let mut actor = Actor {
         source,
@@ -105,9 +116,12 @@ pub(super) async fn run(
         failed: false,
         waiting_since: None,
         waiting_announced: false,
+        paste_keys: PasteKeys::default(),
+        saved_clipboard: None,
     };
-    // Eager: the first word shouldn't wait for session setup (or the permission dialog).
-    actor.connect().await;
+    if eager {
+        actor.connect().await;
+    }
     actor.run().await;
 }
 
@@ -151,6 +165,7 @@ impl Actor {
                 Wake::Cmd(Some(Cmd::Type(text))) => self.queue.push_back(Queued::Text(text)),
                 Wake::Cmd(Some(Cmd::Flush(done))) => self.queue.push_back(Queued::Flush(done)),
                 Wake::Cmd(Some(Cmd::Retry)) => self.retry().await,
+                Wake::Cmd(Some(Cmd::PasteKeys(keys))) => self.paste_keys = keys,
                 Wake::Cmd(None) => {
                     self.shutdown_deadline = Some(Instant::now() + SHUTDOWN_GRACE);
                 }
@@ -239,7 +254,9 @@ impl Actor {
     /// failed connection isn't retried once per queued word. Pending flushes resolve. A
     /// [`Cmd::Retry`] found in the channel ends the failed state, and what was sent after it is
     /// kept: it belongs to the new attempt (which then connects when that text is pumped).
+    /// Settings ([`Cmd::PasteKeys`]) are applied, not dropped.
     fn drop_pending(&mut self) {
+        self.saved_clipboard = None;
         let mut dropped = std::mem::take(&mut self.queue);
         let mut retried = false;
         while let Ok(cmd) = self.rx.try_recv() {
@@ -250,6 +267,7 @@ impl Actor {
                     retried = true;
                     dropped.append(&mut self.queue);
                 }
+                Cmd::PasteKeys(keys) => self.paste_keys = keys,
             }
         }
         if retried {
@@ -306,6 +324,7 @@ impl Actor {
             link.session.close().await;
         }
         self.phase = Phase::Stale;
+        self.saved_clipboard = None; // It belonged to that session's clipboard.
         if !self.typed_on_link {
             // Lost before typing anything: don't retry for the queued text right away.
             self.drop_pending();
@@ -337,6 +356,15 @@ impl Actor {
             match self.phase {
                 Phase::Syncing | Phase::Held => return progressed,
                 Phase::Stale => {
+                    // Text that will be pasted: save the clipboard now, so that the modifier
+                    // check below is fresh when the paste shortcut is pressed.
+                    if self.saved_clipboard.is_none()
+                        && let Some(Queued::Text(text)) = self.queue.front()
+                        && table.plan(text, &mods).unmapped > 0
+                        && let Some(clipboard) = link.session.clipboard()
+                    {
+                        self.saved_clipboard = Some(paste::save(&*clipboard).await);
+                    }
                     let synced = match link.conn.learn_modifiers().await {
                         Ok(()) => link.conn.start_sync().await,
                         Err(e) => Err(e),
@@ -363,6 +391,8 @@ impl Actor {
                     "modifier active: holding text until it is released"
                 );
                 self.phase = Phase::Held;
+                // The user may copy something while holding Ctrl: save it again later.
+                self.saved_clipboard = None;
                 return progressed;
             }
             let Some(Queued::Text(text)) = self.queue.pop_front() else {
@@ -371,10 +401,39 @@ impl Actor {
             progressed = true;
             // Whatever happens below, the next text gets a fresh round trip first.
             self.phase = Phase::Stale;
+            let saved_clipboard = self.saved_clipboard.take();
             let plan = table.plan(&text, &mods);
             trace!(chars = text.chars().count(), group = mods.group, "typing");
             if plan.control > 0 {
                 debug!(count = plan.control, "skipped control characters");
+            }
+            // Characters the layout lacks: paste the whole string instead, if the session has
+            // the clipboard (D-011; see `paste` for why not just the missing characters).
+            let paste_keys = (plan.unmapped > 0)
+                .then(|| table.paste_keys(&mods, self.paste_keys))
+                .flatten();
+            if let (Some(keys), Some(clipboard)) = (paste_keys, link.session.clipboard()) {
+                // Control characters are never pasted either.
+                let text: String = text.chars().filter(|c| !c.is_control()).collect();
+                let previous = match saved_clipboard {
+                    Some(saved) => saved,
+                    // Not saved before the round trip (the layout changed during it).
+                    None => paste::save(&*clipboard).await,
+                };
+                let conn = &mut link.conn;
+                let keys = &keys;
+                match paste::paste(&*clipboard, previous, &text, move || conn.burst(keys)).await {
+                    Ok(Outcome::Pasted) => {
+                        trace!(chars = text.chars().count(), "pasted");
+                        self.typed_on_link = true;
+                        continue;
+                    }
+                    Ok(Outcome::Skipped(why)) => debug!(why, "not pasted; typing what we can"),
+                    Err(e) => {
+                        self.lose(format!("EIS write error: {e}")).await;
+                        return progressed;
+                    }
+                }
             }
             if plan.unmapped > 0 {
                 debug!(
@@ -447,13 +506,14 @@ fn error_chain(e: &dyn std::error::Error) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{sync::Arc, time::Duration};
 
     use tokio::sync::mpsc;
 
     use super::*;
     use crate::output::{
         Output,
+        clipboard::{FakeClipboard, Offer},
         test_eis::{Connections, Next, Server, Setup},
     };
 
@@ -469,6 +529,7 @@ mod tests {
             group,
             held: &[],
             replace_before_sync: None,
+            clipboard: None,
         }
     }
 
@@ -624,6 +685,8 @@ mod tests {
             failed: true,
             waiting_since: None,
             waiting_announced: false,
+            paste_keys: PasteKeys::default(),
+            saved_clipboard: None,
         };
         for cmd in [
             Cmd::Type("before ".into()),
@@ -657,5 +720,89 @@ mod tests {
             next_event(&mut events).await,
             OutputEvent::Disconnected(_)
         ));
+    }
+
+    #[tokio::test]
+    async fn characters_off_the_layout_are_pasted_and_the_clipboard_restored() {
+        let previous = Offer::text("the user's copy");
+        let clipboard = FakeClipboard::new(previous.clone());
+        let conns = Connections::default();
+        let (mut server, next) = Server::start(Setup {
+            clipboard: Some(Arc::clone(&clipboard)),
+            ..setup("us", 0)
+        });
+        conns.push(next);
+        let (out, mut events) = spawn(&conns);
+        expect_ready(&mut events).await;
+        // `ą` isn't on us: the whole word is pasted, the next one typed.
+        type_words(&out, &["mą\tstau ", "Ok "]).await;
+        server.expect_typed("mąstau Ok ").await;
+        assert_eq!(clipboard.offer(), previous, "previous clipboard restored");
+        assert_eq!(
+            clipboard.sets().first(),
+            Some(&Offer::text("mąstau ")),
+            "control characters are never pasted"
+        );
+        while let Ok(e) = events.try_recv() {
+            assert!(matches!(e, OutputEvent::Waiting(_)), "unexpected {e:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_paste_shortcut_can_be_ctrl_shift_v() {
+        let clipboard = FakeClipboard::new(Offer::default());
+        let conns = Connections::default();
+        let (mut server, next) = Server::start(Setup {
+            clipboard: Some(Arc::clone(&clipboard)),
+            ..setup("us", 0)
+        });
+        conns.push(next);
+        let (out, mut events) = spawn(&conns);
+        expect_ready(&mut events).await;
+        out.set_paste_keys(crate::output::PasteKeys::CtrlShiftV);
+        type_words(&out, &["ž "]).await;
+        server.expect_typed("ž ").await;
+        assert!(clipboard.offer().is_empty(), "empty clipboard restored");
+    }
+
+    #[tokio::test]
+    async fn without_clipboard_access_off_layout_characters_are_skipped() {
+        let conns = Connections::default();
+        let (mut server, next) = Server::start(setup("us", 0));
+        conns.push(next);
+        let (out, mut events) = spawn(&conns);
+        expect_ready(&mut events).await;
+        type_words(&out, &["mąstau "]).await;
+        server.expect_typed("mstau ").await;
+        assert_eq!(
+            next_event(&mut events).await,
+            OutputEvent::Unmapped { count: 1 }
+        );
+    }
+
+    #[tokio::test]
+    async fn an_idle_output_connects_only_when_asked() {
+        let conns = Connections::default();
+        let (mut server, next) = Server::start(setup("us", 0));
+        conns.push(next);
+        let (tx, mut events) = mpsc::unbounded_channel();
+        let out = Output::spawn_idle(EisSource::Test(conns.clone()), tx);
+        let early = tokio::time::timeout(Duration::from_millis(200), events.recv()).await;
+        assert!(early.is_err(), "connected without being asked: {early:?}");
+        assert_eq!(conns.left(), 1);
+        out.retry();
+        expect_ready(&mut events).await;
+        type_words(&out, &["hi "]).await;
+        server.expect_typed("hi ").await;
+
+        // Text alone also connects.
+        let conns = Connections::default();
+        let (mut server, next) = Server::start(setup("us", 0));
+        conns.push(next);
+        let (tx, mut events) = mpsc::unbounded_channel();
+        let out = Output::spawn_idle(EisSource::Test(conns.clone()), tx);
+        type_words(&out, &["hello "]).await;
+        expect_ready(&mut events).await;
+        server.expect_typed("hello ").await;
     }
 }

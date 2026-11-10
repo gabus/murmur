@@ -19,6 +19,8 @@ use std::{collections::HashMap, os::fd::OwnedFd, os::unix::fs::FileExt};
 
 use xkbcommon::xkb;
 
+use super::PasteKeys;
+
 /// XKB keycodes are Linux evdev keycodes plus 8. `ei_keyboard.key` takes evdev keycodes.
 const EVDEV_OFFSET: u32 = 8;
 
@@ -93,6 +95,8 @@ struct Group {
     shift: Option<u32>,
     /// Evdev keycode murmur presses for Level3 (AltGr) in this group.
     level3: Option<u32>,
+    /// Evdev keycode of a Control key, pressed only for the paste shortcut.
+    ctrl: Option<u32>,
     /// Keysym → stroke, indexed by Caps Lock state (0 = off, 1 = on).
     strokes: [HashMap<u32, Stroke>; 2],
 }
@@ -147,8 +151,9 @@ impl KeyTable {
         let layouts = (0..keymap.num_layouts())
             .map(|g| keymap.layout_get_name(g).to_owned())
             .collect();
+        let ctrl_mask = mod_mask(keymap, xkb::MOD_NAME_CTRL);
         let groups: Vec<Group> = (0..keymap.num_layouts())
-            .map(|g| build_group(keymap, g, lock_mask, blocking_mask))
+            .map(|g| build_group(keymap, g, lock_mask, blocking_mask, ctrl_mask))
             .collect();
         let level_mask = mod_mask(keymap, xkb::MOD_NAME_SHIFT)
             | mod_mask(keymap, xkb::MOD_NAME_ISO_LEVEL3_SHIFT);
@@ -220,6 +225,40 @@ impl KeyTable {
             .copied()
     }
 
+    /// Key events for the paste shortcut in the state `mods`: Control (+ Shift) + the key that
+    /// produces `v` without modifiers, preferably in the active group, else in another group
+    /// (toolkits match Ctrl+V by that key on non-Latin layouts). The only place murmur presses
+    /// Control (D-011); only used when [`KeyTable::blocks_typing`] is false. `None` if the
+    /// keymap lacks a key for it.
+    pub fn paste_keys(&self, mods: &ModState, keys: PasteKeys) -> Option<Vec<KeyEvent>> {
+        let active = usize::try_from(mods.group).ok()?;
+        let group = self.groups.get(active)?;
+        let ctrl = group.ctrl?;
+        let shift = match keys {
+            PasteKeys::CtrlV => None,
+            PasteKeys::CtrlShiftV => Some(group.shift?),
+        };
+        let v = u32::from(b'v');
+        let plain = |g: &Group| {
+            g.strokes[0]
+                .get(&v)
+                .filter(|s| !s.shift && !s.level3)
+                .map(|s| s.key)
+        };
+        let key = plain(group).or_else(|| self.groups.iter().find_map(plain))?;
+        let press = |key| KeyEvent { key, pressed: true };
+        let release = |key| KeyEvent {
+            key,
+            pressed: false,
+        };
+        let mut events = vec![press(ctrl)];
+        events.extend(shift.map(press));
+        events.extend([press(key), release(key)]);
+        events.extend(shift.map(release));
+        events.push(release(ctrl));
+        Some(events)
+    }
+
     /// Key events for `text` in the state `mods`. For each character: press the modifiers it
     /// needs, tap the key, release the modifiers. Characters the active group can't produce
     /// and control characters are skipped and counted.
@@ -261,7 +300,13 @@ fn mod_mask(keymap: &xkb::Keymap, name: &str) -> u32 {
     if idx < 32 { 1 << idx } else { 0 }
 }
 
-fn build_group(keymap: &xkb::Keymap, group: u32, lock_mask: u32, blocking: u32) -> Group {
+fn build_group(
+    keymap: &xkb::Keymap,
+    group: u32,
+    lock_mask: u32,
+    blocking: u32,
+    ctrl_mask: u32,
+) -> Group {
     let shift = modifier_key(
         keymap,
         group,
@@ -316,8 +361,34 @@ fn build_group(keymap: &xkb::Keymap, group: u32, lock_mask: u32, blocking: u32) 
     Group {
         shift: shift.map(|k| k.raw() - EVDEV_OFFSET),
         level3: level3.map(|k| k.raw() - EVDEV_OFFSET),
+        ctrl: control_key(keymap, group, ctrl_mask).map(|k| k.raw() - EVDEV_OFFSET),
         strokes,
     }
+}
+
+/// A key that produces `Control_L`/`Control_R` at level 1 of `group` and sets exactly Control
+/// when pressed, preferring the left one (`LCTL`).
+fn control_key(keymap: &xkb::Keymap, group: u32, ctrl_mask: u32) -> Option<xkb::Keycode> {
+    if ctrl_mask == 0 {
+        return None;
+    }
+    let usable = |key: xkb::Keycode| {
+        let produces = keymap
+            .key_get_syms_by_level(key, group, 0)
+            .first()
+            .is_some_and(|s| [xkb::Keysym::Control_L, xkb::Keysym::Control_R].contains(s));
+        if !produces {
+            return false;
+        }
+        let mut state = xkb::State::new(keymap);
+        state.update_mask(0, 0, 0, 0, 0, group);
+        let _ = state.update_key(key, xkb::KeyDirection::Down);
+        state.serialize_mods(xkb::STATE_MODS_DEPRESSED) == ctrl_mask
+    };
+    keymap
+        .key_by_name("LCTL")
+        .filter(|&k| usable(k))
+        .or_else(|| keycodes(keymap).find(|&k| usable(k)))
 }
 
 /// Finds the key that produces one of `syms` at level 1 of `group`, preferring the key named
@@ -822,6 +893,89 @@ mod tests {
             }
         }
         assert!(problems.is_empty(), "{}", problems.join("\n"));
+    }
+
+    /// What an app sees for the paste shortcut: (keysym, Control active, Shift active) when
+    /// the non-modifier key goes down, and the modifiers left depressed at the end.
+    fn paste_seen(km: &xkb::Keymap, events: &[KeyEvent], group: u32) -> (u32, bool, bool, u32) {
+        let mut state = xkb::State::new(km);
+        state.update_mask(0, 0, 0, 0, 0, group);
+        let mut seen = (0, false, false);
+        for e in events {
+            let key = xkb::Keycode::new(e.key + EVDEV_OFFSET);
+            if e.pressed {
+                let ctrl = state.mod_name_is_active(xkb::MOD_NAME_CTRL, xkb::STATE_MODS_EFFECTIVE);
+                let shift =
+                    state.mod_name_is_active(xkb::MOD_NAME_SHIFT, xkb::STATE_MODS_EFFECTIVE);
+                let sym = state.key_get_one_sym(key);
+                if !matches!(
+                    sym,
+                    xkb::Keysym::Control_L | xkb::Keysym::Shift_L | xkb::Keysym::Shift_R
+                ) {
+                    seen = (sym.raw(), ctrl, shift);
+                }
+                let _ = state.update_key(key, xkb::KeyDirection::Down);
+            } else {
+                let _ = state.update_key(key, xkb::KeyDirection::Up);
+            }
+        }
+        (
+            seen.0,
+            seen.1,
+            seen.2,
+            state.serialize_mods(xkb::STATE_MODS_DEPRESSED),
+        )
+    }
+
+    #[test]
+    fn paste_shortcut_is_ctrl_v_on_the_layouts_v_key() {
+        const KEY_V: u32 = 47;
+        let v = u32::from(b'v');
+        let km = keymap("us");
+        let t = KeyTable::new(&km);
+        let keys = t
+            .paste_keys(&group(0), PasteKeys::CtrlV)
+            .expect("paste keys");
+        assert_eq!(
+            keys.first(),
+            Some(&KeyEvent {
+                key: 29,
+                pressed: true
+            })
+        );
+        assert!(keys.contains(&KeyEvent {
+            key: KEY_V,
+            pressed: true
+        }));
+        assert_eq!(paste_seen(&km, &keys, 0), (v, true, false, 0));
+        let keys = t
+            .paste_keys(&group(0), PasteKeys::CtrlShiftV)
+            .expect("paste keys");
+        assert_eq!(
+            paste_seen(&km, &keys, 0),
+            (u32::from(b'V'), true, true, 0),
+            "Ctrl+Shift+V, all released"
+        );
+        // Dvorak: V is where the layout puts it, not on the QWERTY V key.
+        let km = keymap_variant("us", "dvorak", "");
+        let keys = KeyTable::new(&km)
+            .paste_keys(&group(0), PasteKeys::CtrlV)
+            .expect("paste keys");
+        assert!(!keys.contains(&KeyEvent {
+            key: KEY_V,
+            pressed: true
+        }));
+        assert_eq!(paste_seen(&km, &keys, 0), (v, true, false, 0));
+        // Russian active: the key that is V in the Latin group (what toolkits match then).
+        let km = keymap("us,ru");
+        let keys = KeyTable::new(&km)
+            .paste_keys(&group(1), PasteKeys::CtrlV)
+            .expect("paste keys");
+        assert!(keys.contains(&KeyEvent {
+            key: KEY_V,
+            pressed: true
+        }));
+        assert!(paste_seen(&km, &keys, 1).1, "Control held");
     }
 
     #[test]

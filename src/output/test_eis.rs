@@ -6,7 +6,8 @@
 //! seat with a keyboard device carrying a real XKB keymap, `ei_keyboard.modifiers` sent only
 //! when the seat's state changes (never initially), and `sync` answered after everything sent
 //! before it. Its own `xkb::State` stands in for the seat: it applies murmur's keys and the
-//! "physical" keys a test presses, and records the text a focused client would see.
+//! "physical" keys a test presses, and records the text a focused client would see. With a
+//! [`FakeClipboard`], Ctrl+V (or Ctrl+Shift+V) pastes from it, like an app would.
 
 use std::{
     collections::VecDeque,
@@ -26,13 +27,17 @@ use tokio::{
 };
 use xkbcommon::xkb;
 
-use super::source::{SessionHandle, SourceError};
+use super::{
+    clipboard::{ClipboardAccess, FakeClipboard},
+    source::{SessionHandle, SourceError},
+};
 
 /// What the next connect attempt gets.
 pub(crate) enum Next {
     Eis {
         fd: OwnedFd,
         closed: oneshot::Receiver<()>,
+        clipboard: Option<Arc<FakeClipboard>>,
     },
     Deny,
     Unavailable,
@@ -55,10 +60,15 @@ impl Connections {
 
     pub(super) fn open(&self) -> Result<(OwnedFd, SessionHandle), SourceError> {
         match self.lock().pop_front() {
-            Some(Next::Eis { fd, closed }) => Ok((
+            Some(Next::Eis {
+                fd,
+                closed,
+                clipboard,
+            }) => Ok((
                 fd,
                 SessionHandle::Test {
                     closed: Some(closed),
+                    clipboard: clipboard.map(|c| c as Arc<dyn ClipboardAccess>),
                 },
             )),
             Some(Next::Deny) => Err(SourceError::PermissionDenied),
@@ -98,6 +108,8 @@ pub(crate) struct Setup {
     /// Replace the keyboard device (new device first, then the old one removed) right before
     /// answering this `sync` (1-based), like KWin does on a keymap change.
     pub replace_before_sync: Option<u32>,
+    /// The session's clipboard (`None`: no clipboard access, like KwinDirect).
+    pub clipboard: Option<Arc<FakeClipboard>>,
 }
 
 enum Control {
@@ -120,6 +132,7 @@ impl Server {
         let (typed_tx, typed) = watch::channel(String::new());
         let (control, control_rx) = mpsc::unbounded_channel();
         let (close, closed) = oneshot::channel();
+        let clipboard = setup.clipboard.clone();
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -130,6 +143,7 @@ impl Server {
         let next = Next::Eis {
             fd: client.into(),
             closed,
+            clipboard,
         };
         (
             Self {
@@ -200,6 +214,7 @@ struct Seat {
     /// Last reported (depressed, locked, latched, group).
     reported: (u32, u32, u32, u32),
     typed: watch::Sender<String>,
+    clipboard: Option<Arc<FakeClipboard>>,
 }
 
 impl Seat {
@@ -239,7 +254,22 @@ impl Seat {
     fn key(&mut self, key: u32, pressed: bool, typing: bool) {
         let code = xkb::Keycode::new(key + 8);
         if pressed {
-            if typing {
+            let ctrl = self
+                .state
+                .mod_name_is_active(xkb::MOD_NAME_CTRL, xkb::STATE_MODS_EFFECTIVE);
+            let sym = self.state.key_get_one_sym(code).raw();
+            if typing && ctrl {
+                // A shortcut, not text. Ctrl+V and Ctrl+Shift+V paste.
+                let paste = sym == u32::from(b'v') || sym == u32::from(b'V');
+                if let Some(text) = self
+                    .clipboard
+                    .as_ref()
+                    .filter(|_| paste)
+                    .and_then(|c| c.paste())
+                {
+                    self.typed.send_modify(|t| t.push_str(&text));
+                }
+            } else if typing {
                 let text = self.state.key_get_utf8(code);
                 self.typed.send_modify(|t| t.push_str(&text));
             }
@@ -340,6 +370,7 @@ async fn serve(
         state,
         reported: (0, 0, 0, 0),
         typed,
+        clipboard: setup.clipboard.clone(),
     };
     // Nothing is reported until the state changes, like KWin.
     s.reported = s.mods();

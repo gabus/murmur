@@ -11,6 +11,7 @@ use std::{
 use ashpd::{
     desktop::{
         CreateSessionOptions, PersistMode, ResponseError, Session,
+        clipboard::{Clipboard, RequestClipboardOptions},
         remote_desktop::{
             ConnectToEISOptions, DeviceType, RemoteDesktop, SelectDevicesOptions, StartOptions,
         },
@@ -21,7 +22,10 @@ use futures_util::StreamExt;
 use tokio::sync::oneshot;
 use tracing::{debug, warn};
 
-use super::EisSource;
+use super::{
+    EisSource,
+    clipboard::{ClipboardAccess, PortalClipboard},
+};
 
 /// KWin's `connectToEIS` capability bit for a keyboard (same value as the portal's).
 const KWIN_KEYBOARD: i32 = 1;
@@ -52,6 +56,8 @@ pub(crate) enum SessionHandle {
         closed: Option<oneshot::Receiver<()>>,
         /// The task listening for `Closed`; stopped with the handle.
         _watcher: AbortOnDrop,
+        /// Clipboard access, if the portal has it and the user granted it.
+        clipboard: Option<Arc<PortalClipboard>>,
     },
     Kwin {
         bus: zbus::Connection,
@@ -61,11 +67,18 @@ pub(crate) enum SessionHandle {
     Test {
         /// Fires when the test closes the "portal session".
         closed: Option<oneshot::Receiver<()>>,
+        clipboard: Option<Arc<dyn ClipboardAccess>>,
     },
 }
 
 /// Aborts a spawned task when dropped.
 pub(crate) struct AbortOnDrop(tokio::task::AbortHandle);
+
+impl AbortOnDrop {
+    pub(crate) fn new(task: tokio::task::AbortHandle) -> Self {
+        Self(task)
+    }
+}
 
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {
@@ -74,13 +87,25 @@ impl Drop for AbortOnDrop {
 }
 
 impl SessionHandle {
+    /// The session's clipboard, for pasting what the layout can't type (D-011).
+    pub(crate) fn clipboard(&self) -> Option<Arc<dyn ClipboardAccess>> {
+        match self {
+            Self::Portal { clipboard, .. } => clipboard
+                .as_ref()
+                .map(|c| Arc::clone(c) as Arc<dyn ClipboardAccess>),
+            #[cfg(test)]
+            Self::Test { clipboard, .. } => clipboard.clone(),
+            Self::Kwin { .. } => None,
+        }
+    }
+
     /// Resolves when the compositor or the user closed the session (e.g. KDE's "stop remote
     /// control"). Never resolves for sessions without such a signal. Cancel-safe.
     pub(crate) async fn closed(&mut self) {
         match self {
             Self::Portal { closed, .. } => fired(closed).await,
             #[cfg(test)]
-            Self::Test { closed } => fired(closed).await,
+            Self::Test { closed, .. } => fired(closed).await,
             Self::Kwin { .. } => std::future::pending().await,
         }
     }
@@ -200,15 +225,30 @@ async fn open_portal(token_path: &Path) -> Result<(OwnedFd, SessionHandle), Sour
     let (closed, watcher) = watch_closed(&session).await;
     let opened = start_portal_session(&portal, &session, token.as_deref(), token_path).await;
     match opened {
-        Ok(fd) => Ok((
-            fd,
-            SessionHandle::Portal {
-                _portal: portal,
-                session,
-                closed: Some(closed),
-                _watcher: watcher,
-            },
-        )),
+        Ok((fd, clipboard)) => {
+            let clipboard = match clipboard {
+                Some(clipboard) => {
+                    match PortalClipboard::start(clipboard, Arc::clone(&session)).await {
+                        Ok(clipboard) => Some(Arc::new(clipboard)),
+                        Err(e) => {
+                            warn!("clipboard access granted but unusable; not pasting: {e}");
+                            None
+                        }
+                    }
+                }
+                None => None,
+            };
+            Ok((
+                fd,
+                SessionHandle::Portal {
+                    _portal: portal,
+                    session,
+                    closed: Some(closed),
+                    _watcher: watcher,
+                    clipboard,
+                },
+            ))
+        }
         Err(e) => {
             // Don't leave a half-set-up session behind.
             session.close().await.ok();
@@ -217,12 +257,14 @@ async fn open_portal(token_path: &Path) -> Result<(OwnedFd, SessionHandle), Sour
     }
 }
 
+/// Starts the session and connects to EIS. Also returns the clipboard, if the portal has the
+/// Clipboard interface and the user granted it (for pasting, D-011).
 async fn start_portal_session(
     portal: &RemoteDesktop,
     session: &Session<RemoteDesktop>,
     token: Option<&str>,
     token_path: &Path,
-) -> Result<OwnedFd, SourceError> {
+) -> Result<(OwnedFd, Option<Clipboard>), SourceError> {
     portal
         .select_devices(
             session,
@@ -234,6 +276,8 @@ async fn start_portal_session(
         .await
         .and_then(|r| r.response())
         .map_err(portal_error)?;
+    // Must come before `Start`. Typing works without it, so failures only disable pasting.
+    let clipboard = request_clipboard(portal, session).await;
     // Shows the permission dialog unless the restore token is accepted.
     let started = portal
         .start(session, None, StartOptions::default())
@@ -263,10 +307,43 @@ async fn start_portal_session(
     if let Err(e) = saved {
         warn!("cannot save the RemoteDesktop restore token: {e}");
     }
-    portal
+    let clipboard = clipboard.filter(|_| {
+        let granted = started.is_clipboard_enabled();
+        if !granted {
+            debug!("clipboard access not granted; characters off the layout are skipped");
+        }
+        granted
+    });
+    let fd = portal
         .connect_to_eis(session, ConnectToEISOptions::default())
         .await
-        .map_err(portal_error)
+        .map_err(portal_error)?;
+    Ok((fd, clipboard))
+}
+
+/// Asks for clipboard access on `session` (before `Start`). `None` if the portal lacks the
+/// Clipboard interface or refuses the request.
+async fn request_clipboard(
+    portal: &RemoteDesktop,
+    session: &Session<RemoteDesktop>,
+) -> Option<Clipboard> {
+    let clipboard = match Clipboard::with_connection(portal.connection().clone()).await {
+        Ok(clipboard) => clipboard,
+        Err(e) => {
+            debug!("no clipboard portal: {e}");
+            return None;
+        }
+    };
+    match clipboard
+        .request(session, RequestClipboardOptions::default())
+        .await
+    {
+        Ok(()) => Some(clipboard),
+        Err(e) => {
+            debug!("clipboard request failed: {e}");
+            None
+        }
+    }
 }
 
 fn portal_error(e: ashpd::Error) -> SourceError {

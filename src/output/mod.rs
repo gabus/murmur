@@ -7,9 +7,16 @@
 //! each burst a `sync` round trip makes sure the known layout and modifier state are current;
 //! while the user holds, latches or locks a modifier the plan can't account for (anything but
 //! Caps Lock and Num Lock, D-006), text waits until it is released.
+//!
+//! A string with characters the active layout can't produce is pasted instead, when the
+//! portal granted clipboard access (D-011): murmur offers it as the clipboard selection,
+//! presses the paste shortcut and then restores the previous selection. Without clipboard
+//! access those characters are skipped and reported as [`OutputEvent::Unmapped`].
 
+mod clipboard;
 mod eis;
 pub mod keymap;
+mod paste;
 mod reader;
 mod source;
 mod task;
@@ -59,11 +66,23 @@ pub enum OutputEvent {
     /// latched or locked) a modifier, or the compositor paused or removed the keyboard. `false`:
     /// text flows again (or the waiting text was dropped). Sent only after a `true`.
     Waiting(bool),
-    /// Characters skipped because the active layout can't produce them. Carries no text.
+    /// Characters skipped because the active layout can't produce them and pasting them wasn't
+    /// possible (no clipboard access, the paste wasn't picked up, or the previous clipboard
+    /// couldn't be saved for restoring). Carries no text.
     Unmapped {
         /// Number of skipped characters.
         count: usize,
     },
+}
+
+/// The shortcut murmur presses to paste ([`Output::set_paste_keys`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PasteKeys {
+    /// Ctrl+V, what most apps use.
+    #[default]
+    CtrlV,
+    /// Ctrl+Shift+V, what terminals use.
+    CtrlShiftV,
 }
 
 /// Handle to the typing task. Cheap to clone; the task ends when every handle is dropped,
@@ -78,9 +97,26 @@ impl Output {
     /// `tokio::spawn`). Connects eagerly, so the first word isn't delayed by session setup,
     /// and reports progress and problems on `events`.
     pub fn spawn(source: EisSource, events: mpsc::UnboundedSender<OutputEvent>) -> Self {
+        Self::start(source, events, true)
+    }
+
+    /// Like [`Output::spawn`], but doesn't connect until [`Output::retry`] is called or text
+    /// arrives, so the permission dialog appears only when asked for (first-run setup, D-009).
+    pub fn spawn_idle(source: EisSource, events: mpsc::UnboundedSender<OutputEvent>) -> Self {
+        Self::start(source, events, false)
+    }
+
+    fn start(source: EisSource, events: mpsc::UnboundedSender<OutputEvent>, eager: bool) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
-        tokio::spawn(task::run(source, events, rx));
+        tokio::spawn(task::run(source, events, rx, eager));
         Self { tx }
+    }
+
+    /// Sets the shortcut used to paste characters the layout can't type (default Ctrl+V;
+    /// terminals want Ctrl+Shift+V). Applies to every paste after the task receives it.
+    pub fn set_paste_keys(&self, keys: PasteKeys) {
+        // Fails only if the task is gone, and then there's nobody to type.
+        let _ = self.tx.send(task::Cmd::PasteKeys(keys));
     }
 
     /// Queues text to type, usually one word plus its trailing space (D-002). Queued strings
