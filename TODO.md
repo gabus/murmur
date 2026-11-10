@@ -52,15 +52,15 @@ Goal: `murmur` daemon, hotkey toggles listening, phrases get typed.
 
 ## Stage 3: Models
 
-- [ ] Model registry (name, mode, URL, size, sha256, language)
-- [ ] Download on demand with progress, then verify checksum
-- [ ] Store under `$XDG_DATA_HOME/murmur/models`
-- [ ] Model picker in tray menu, with delete option
-- [ ] Light engine: streaming Zipformer transducer, greedy decoding, ~1 s commit delay, punctuation/casing step
-- [ ] Verify light engine output is append-only (log any case where earlier tokens change)
-- [ ] Moonshine as a lighter re-check model
-- [ ] Lazy load on first activation; unload after idle timeout
-- [ ] Measure: load time, RAM, latency to text, CPU while listening (record in `docs/benchmarks.md`)
+- [x] Model registry (name, mode, URL, size, sha256, language)
+- [x] Download on demand with progress, then verify checksum
+- [x] Store under `$XDG_DATA_HOME/murmur/models`
+- [x] Model picker in tray menu, with delete option
+- [x] Light engine: streaming Zipformer transducer, greedy decoding, ~1 s commit delay, punctuation/casing step
+- [x] Verify light engine output is append-only (log any case where earlier tokens change)
+- [x] Moonshine as a lighter re-check model
+- [x] Lazy load on first activation; unload after idle timeout
+- [x] Measure: load time, RAM, latency to text, CPU while listening (record in `docs/benchmarks.md`)
 
 ## Stage 4: Polish
 
@@ -105,8 +105,8 @@ Goal: `murmur` daemon, hotkey toggles listening, phrases get typed.
 - [x] Is `sherpa-rs` complete enough for streaming + VAD, or do we need our own bindings? → use the official `sherpa-onnx` crate
 - [ ] Will Flathub accept prebuilt onnxruntime, or must it be built from source?
 - [x] Re-check CPU cost: can Parakeet re-run every ~0.5 s on CPU without noticeable load? → yes on a 7700X: 16 % of real time (`docs/benchmarks.md`); weaker CPUs TBD
-- [ ] Parakeet v3 auto language detection during re-check: do consecutive runs flip language on short/ambiguous starts? If so, add a "language: auto / fixed" setting.
+- [ ] Parakeet v3 auto language detection during re-check: do consecutive runs flip language on short/ambiguous starts? If so, add a "language: auto / fixed" setting. (en→de→en test: no flips; real short Lithuanian utterances untested)
 - [ ] int8 vs. full-precision Parakeet v3: accuracy and speed difference on CPU.
 - [ ] Best delay: compare accuracy at 0.5 / 1 / 1.5 s against whole-phrase Parakeet on the same recordings.
-- [ ] Is there a streaming model sherpa-onnx can run that already outputs punctuation + casing (e.g. NVIDIA cache-aware streaming FastConformer)?
+- [ ] Is there a streaming model sherpa-onnx can run that already outputs punctuation + casing? → yes: Kroko en 2025 (57 MB, license unclear, D-008) and Nemotron streaming 0.6B (464 MB). Revisit with the license decision.
 - [x] **Output mechanism (biggest UX decision):** → portal EIS key events for now (D-005); IME stays Stage 7. portal keystrokes (one-click Flatpak, works everywhere, not seamless) vs. input-method engine (Fcitx5/IBus: seamless and Mac-like, but not a one-click Flatpak and different per desktop). Decide after stage 0 shows how bad collisions and held modifiers are.

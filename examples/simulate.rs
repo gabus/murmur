@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use murmur::{
     asr::{
+        Engine,
         engine::{EngineConfig, RecheckEngine, SAMPLE_RATE, Transcriber},
         moonshine::Moonshine,
         parakeet::Parakeet,
@@ -23,6 +24,13 @@ fn transcriber(id: &str, threads: i32) -> anyhow::Result<Box<dyn Transcriber + S
     Ok(match m.kind {
         Kind::Parakeet => Box::new(Parakeet::load(&dir, threads)?),
         Kind::Moonshine => Box::new(Moonshine::load(&dir, threads)?),
+        // The light engine isn't a re-check transcriber; use Parakeet as reference.
+        Kind::Light => {
+            let p =
+                models::find(models::DEFAULT_MODEL).ok_or_else(|| anyhow::anyhow!("default"))?;
+            let pdir = p.dir(&paths::models_dir().ok_or_else(|| anyhow::anyhow!("no data dir"))?);
+            Box::new(Parakeet::load(&pdir, threads)?)
+        }
     })
 }
 
@@ -87,9 +95,14 @@ impl<T: Transcriber> Transcriber for Timed<T> {
 }
 
 fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_writer(std::io::stderr)
+        .init();
     let mut gap = 1.5f64;
     let mut agc_on = false;
     let mut dump = false;
+    let mut reference = true;
     let mut model = models::DEFAULT_MODEL.to_owned();
     let mut cfg = EngineConfig::default();
     let mut threads = 4;
@@ -99,6 +112,7 @@ fn main() -> anyhow::Result<()> {
         match a.as_str() {
             "--agc" => agc_on = true,
             "--dump" => dump = true,
+            "--no-ref" => reference = false,
             "--model" => model = args.next().unwrap_or(model),
             "--gap" => gap = args.next().and_then(|s| s.parse().ok()).unwrap_or(gap),
             "--min-age" => {
@@ -128,27 +142,38 @@ fn main() -> anyhow::Result<()> {
     }
 
     let t = Instant::now();
-    let parakeet = transcriber(&model, threads)?;
-    let vad = SileroVad::load(&models.join("silero_vad.onnx"), 0.8)?;
+    let info = models::find(&model).ok_or_else(|| anyhow::anyhow!("unknown model {model}"))?;
+    let mut engine: Box<dyn Engine> = if info.kind == Kind::Light {
+        models::load_engine(&models::LoadSpec {
+            model: info,
+            models_dir: models.clone(),
+            threads,
+            engine: cfg.clone(),
+            min_silence: 0.8,
+        })?
+    } else {
+        let vad = SileroVad::load(&models.join("silero_vad.onnx"), 0.8)?;
+        Box::new(RecheckEngine::new(
+            cfg.clone(),
+            Timed {
+                inner: transcriber(&model, threads)?,
+                runs: Vec::new(),
+                dump,
+            },
+            vad,
+        ))
+    };
     println!(
         "load {:?}; audio {:.1}s; {cfg:?}",
         t.elapsed(),
         audio.len() as f64 / SAMPLE_RATE as f64
     );
-
-    let mut engine = RecheckEngine::new(
-        cfg,
-        Timed {
-            inner: parakeet,
-            runs: Vec::new(),
-            dump,
-        },
-        vad,
-    );
     let mut typed = String::new();
     let wall = Instant::now();
     let mut agc = murmur::agc::Agc::new(SAMPLE_RATE as u32);
+    let mut now = 0.0f64;
     for chunk in audio.chunks(320) {
+        now += chunk.len() as f64 / SAMPLE_RATE as f64;
         let mut chunk = chunk.to_vec();
         if agc_on {
             agc.process(&mut chunk);
@@ -156,22 +181,22 @@ fn main() -> anyhow::Result<()> {
         for w in engine.push(&chunk)? {
             println!(
                 "  {:>6.2}s  {:<16} (word end {:.2}s, lag {:.2}s)",
-                engine.now(),
+                now,
                 w.text,
                 w.end,
-                engine.now() - w.end
+                now - w.end
             );
             typed.push_str(&w.text);
             typed.push(' ');
         }
     }
     for w in engine.finish()? {
-        println!("  {:>6.2}s  {:<16} (final)", engine.now(), w.text);
+        println!("  {:>6.2}s  {:<16} (final)", now, w.text);
         typed.push_str(&w.text);
         typed.push(' ');
     }
     let cpu = wall.elapsed();
-    let s = engine.stats().clone();
+    let s = engine.stats();
     println!("\nTYPED: {typed}");
     println!(
         "words {} | avg audio lag {:.2}s | max {:.2}s | decodes {} | decode wall total {:?} for {:.1}s audio ({:.0}% of real time)",
@@ -184,6 +209,9 @@ fn main() -> anyhow::Result<()> {
         100.0 * cpu.as_secs_f64() / (audio.len() as f64 / SAMPLE_RATE as f64)
     );
 
+    if !reference {
+        return Ok(());
+    }
     // Reference: whole-file transcription of each input on its own.
     let mut whole = transcriber(&model, threads)?;
     let mut reference = String::new();

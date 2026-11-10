@@ -58,3 +58,26 @@ AltGr.**
 - Also: murmur taps the `<LVL3>` key (ISO_Level3_Shift, never Alt) once per EIS device, because
   KWin reports the active layout and held modifiers only after a change.
 - Spec: README → Functional requirements → Output; Known limitations → Held modifiers.
+
+### D-007 · 2026-11-10 · Claude (from output review; maintainer informed). Supersedes D-006
+**Typing waits whenever the keyboard state could change what murmur types:** any held modifier
+(except Caps Lock), any latched modifier, and any locked modifier except Caps Lock and locks
+proven harmless for the current layout (e.g. Num Lock on common layouts, but not Neo's level
+lock). Caps Lock is planned for, not waited on.
+- Why: a review replayed every typeable character through xkb. Sticky-keys locks, latched
+  Shift and Neo's level-5/level-lock turned dictated letters into shortcuts or navigation keys
+  (Return, BackSpace). Waiting is the only safe choice, and nothing is lost.
+- While waiting for more than about 2 s, the tray shows *Waiting* with a hint to release the
+  keys.
+- If typing is denied or unavailable, murmur stops retrying until the next dictation starts
+  (no dialog per word).
+- Spec: README → Functional requirements → Output; Known limitations.
+
+### D-008 · 2026-11-10 · Claude (model evaluation; maintainer informed)
+**Model catalogue:** Parakeet v3 (default), Moonshine base and tiny v2 (English, lighter), and a
+"Light" streaming engine (Zipformer en 2023-06-26 plus the English punctuation/casing model).
+- Why: measured in `docs/benchmarks.md`. The 20M Zipformer drops utterance starts. Kroko
+  (2025) streams with native punctuation and is better, but its license is unclear
+  (CC-BY-SA community tier, placeholder metadata). Kept as an open question until licensing
+  (D-003).
+- Spec: README → Supported models.

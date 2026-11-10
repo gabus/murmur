@@ -24,6 +24,8 @@ enum Shown {
     Idle,
     Listening(u8),
     Loading(u8),
+    /// Words wait for the user to release modifier keys.
+    Waiting,
     Error(String),
 }
 
@@ -87,6 +89,7 @@ impl ksni::Tray for MurmurTray {
             Shown::Idle => return Vec::new(),
             Shown::Listening(l) => Look::Listening { level: *l },
             Shown::Loading(p) => Look::Loading { phase: *p },
+            Shown::Waiting => Look::Loading { phase: 0 },
             Shown::Error(_) => Look::Error,
         };
         // `icon_pixmap` takes &self; render on cache miss.
@@ -116,6 +119,9 @@ impl ksni::Tray for MurmurTray {
             },
             Shown::Listening(_) => "Listening — press again to stop".into(),
             Shown::Loading(_) => "Loading the speech model… (already recording)".into(),
+            Shown::Waiting => {
+                "Waiting — release the Shift/Ctrl/Alt/Super keys and the words will be typed".into()
+            }
             Shown::Error(e) => e.clone(),
         };
         let description = match &self.models.download {
@@ -319,6 +325,7 @@ pub async fn run(
                     Status::Idle => Shown::Idle,
                     // Loading starts out looking like Listening (spec: icon switches immediately).
                     Status::Loading | Status::Listening => Shown::Listening(*level.borrow()),
+                    Status::Waiting => Shown::Waiting,
                     Status::Error(e) => Shown::Error(e),
                 };
                 handle.update(|t| t.shown = shown).await;

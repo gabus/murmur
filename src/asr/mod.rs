@@ -2,6 +2,7 @@
 
 pub mod committer;
 pub mod engine;
+pub mod light;
 pub mod moonshine;
 pub mod parakeet;
 pub mod words;

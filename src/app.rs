@@ -25,6 +25,8 @@ const STOP_TAIL: Duration = Duration::from_millis(250);
 const MIC_OPEN_TIMEOUT: Duration = Duration::from_secs(3);
 /// On quit, wait at most this long for the last phrase to be transcribed.
 const QUIT_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
+/// On quit, wait at most this long for queued words to be typed.
+const QUIT_TYPE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// What the user should see (tray icon in stage 2).
 #[derive(Debug, Clone, PartialEq)]
@@ -33,6 +35,8 @@ pub enum Status {
     /// Listening, model still loading (audio is being buffered).
     Loading,
     Listening,
+    /// Words are waiting until the user releases the modifier keys they hold.
+    Waiting,
     Error(String),
 }
 
@@ -193,7 +197,12 @@ impl App {
         if let Some(h) = self.stopping.take() {
             let _ = h.await;
         }
-        self.output.flush().await;
+        if tokio::time::timeout(QUIT_TYPE_TIMEOUT, self.output.flush())
+            .await
+            .is_err()
+        {
+            warn!("gave up typing the last words (keys held or typing unavailable)");
+        }
         let asr = self.asr;
         let _ = tokio::task::spawn_blocking(move || drop(asr)).await;
     }
@@ -236,6 +245,8 @@ impl App {
             return;
         }
         self.unload_at = None;
+        // A new dictation is a fresh chance after a denied/unavailable typing session.
+        self.output.retry();
         // A previous stop must have delivered its End before the next Begin.
         if let Some(h) = self.stopping.take() {
             let _ = h.await;
@@ -350,6 +361,19 @@ impl App {
                     count,
                     "characters not on the active keyboard layout were skipped"
                 );
+            }
+            OutputEvent::Waiting(true) => {
+                info!("typing waits for held modifier keys");
+                self.set_status(Status::Waiting);
+            }
+            OutputEvent::Waiting(false) => {
+                if *self.status.borrow() == Status::Waiting {
+                    self.set_status(if self.state == State::Listening {
+                        Status::Listening
+                    } else {
+                        Status::Idle
+                    });
+                }
             }
         }
     }

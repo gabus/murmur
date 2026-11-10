@@ -121,6 +121,16 @@ the EIS fd with no dialog. libei 1.6.0.
   `en.wav` into the test pad exactly, with the model loading (1.44 s) while audio was
   buffered. Avg lag 0.93 s.
 
+## Output review (unit-tested with a fake EIS server, `src/output/test_eis.rs`)
+
+- Replaying every typeable character through xkb across 13 layout/option combos (Caps on/off,
+  Num Lock on) gives exact text, never activates Ctrl/Alt/Super, and leaves no modifier down.
+- Waiting covers locked and latched modifiers, Neo's level 5 and level lock (D-007).
+- A device replaced during a `sync` round-trip is re-probed. A held AltGr at the first word
+  (the probe can't see it, because KWin reports changes only) makes text wait.
+- **Not tested against a real portal:** the session `Closed` signal handling, and reading the
+  portal version on errors.
+
 ## Automated testing without the user's desktop
 
 `kwin_wayland --virtual --socket murmur-test-0` inside `dbus-run-session` starts an invisible

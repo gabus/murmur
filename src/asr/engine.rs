@@ -54,6 +54,8 @@ pub struct EngineConfig {
     pub max_buffer: f64,
     /// Hard cap: if the buffer still grows past this (nothing agrees), flush it (seconds).
     pub hard_max_buffer: f64,
+    /// Light (streaming) engine: type a word once it is this old (seconds).
+    pub light_commit_delay: f64,
 }
 
 impl Default for EngineConfig {
@@ -64,6 +66,7 @@ impl Default for EngineConfig {
             preroll: 0.5,
             max_buffer: 15.0,
             hard_max_buffer: 30.0,
+            light_commit_delay: 1.0,
         }
     }
 }

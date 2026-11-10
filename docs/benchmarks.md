@@ -43,3 +43,24 @@ attenuated:
 | room noise only (3 s, real mic) | 0 decodes | 0 decodes (no false triggers) |
 
 Normal-level speech is unchanged with AGC on.
+
+## Model comparison (`examples/simulate --no-ref --agc --gap 0`)
+
+Input: eight synthesized sentences back to back, 43.5 s of continuous speech, release build,
+4 threads (Light: 2).
+
+| Model | Load | Peak RAM | CPU (decode / audio) | Avg lag | Notes |
+|---|---|---|---|---|---|
+| Parakeet v3 | 1.4 s | 1.1 GB | 26 % | 1.04 s | most accurate |
+| Moonshine base v2 | 0.46 s | 355 MB | 22 % | ~1 s* | good; no timestamps |
+| Moonshine tiny v2 | 0.25 s | 170 MB | 14 % | ~1 s* | more mishearings |
+| Light (Zipformer 2023-06-26 + punct) | 1.2 s | 176 MB | **5 %** | 0.94 s | digits spelled out, occasional casing slips |
+
+\* Sequence mode reports no audio-time lag. Words commit after two agreeing runs, with the
+edge word held back.
+
+- Light engine **append-only check:** 0 violations over the corpus (the TODO item).
+- Rejected: the 20M Zipformer drops the first words of utterances, even when fed directly to
+  sherpa (`examples/light_probe`). The Kroko 2025 streaming model gives native punctuation
+  and casing, but its license is unclear (D-008).
+- With an idle unload of 10 min, idle RAM drops back to the base daemon.
