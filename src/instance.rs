@@ -47,14 +47,18 @@ pub async fn acquire(commands: mpsc::UnboundedSender<Command>) -> Result<Instanc
     conn.object_server()
         .at(OBJECT_PATH, Remote { commands })
         .await?;
-    let reply = conn
+    // zbus reports a taken name (with DO_NOT_QUEUE) as `Error::NameTaken`.
+    let taken = match conn
         .request_name_with_flags(APP_ID, RequestNameFlags::DO_NOT_QUEUE)
-        .await?;
-    match reply {
-        RequestNameReply::PrimaryOwner | RequestNameReply::AlreadyOwner => {
-            Ok(Instance::Primary(conn))
-        }
-        _ => {
+        .await
+    {
+        Ok(RequestNameReply::PrimaryOwner | RequestNameReply::AlreadyOwner) => false,
+        Ok(_) | Err(zbus::Error::NameTaken) => true,
+        Err(e) => return Err(e.into()),
+    };
+    match taken {
+        false => Ok(Instance::Primary(conn)),
+        true => {
             info!("murmur is already running; opening its settings");
             let call = conn.call_method(Some(APP_ID), OBJECT_PATH, Some(APP_ID), "Activate", &());
             // Never become a second daemon, even if the running one doesn't answer.

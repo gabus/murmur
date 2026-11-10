@@ -14,10 +14,13 @@ use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 fn main() -> Result<()> {
-    if std::env::args_os().nth(1).is_some_and(|a| a == "--ui") {
-        // The UI process; never start a second daemon from here (it would ask
-        // the running one to open a window, which would start another UI…).
-        anyhow::bail!("this build has no UI windows yet");
+    // UI child process. Before the tracing init: stdout is its protocol pipe.
+    let mut args = std::env::args_os().skip(1);
+    if args.next().is_some_and(|a| a == "--ui") {
+        let window = args
+            .next()
+            .and_then(|a| a.to_str().and_then(murmur::ui::protocol::Window::from_arg));
+        return murmur::ui::run(window.context("usage: murmur --ui setup|settings")?);
     }
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)

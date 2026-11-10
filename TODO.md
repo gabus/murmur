@@ -64,8 +64,8 @@ Goal: `murmur` daemon, hotkey toggles listening, phrases get typed.
 ## Stage 4: Polish
 
 - [x] Config file `$XDG_CONFIG_HOME/murmur/config.toml` (model, pause, idle unload, microphone, autostart, paste keys; spacing is fixed by D-002)
-- [ ] First-run setup window: shortcut → typing permission → model download (one time only) (daemon side done; Slint UI in progress)
-- [ ] Settings window (D-010)
+- [x] First-run setup window: shortcut → typing permission → model download (one time only); D-009, verified in a nested KWin with the real daemon
+- [x] Settings window (D-010)
 - [ ] Verify the paste fallback against the real Clipboard portal (KDE, then GNOME)
 - [ ] Investigate cpal PulseAudio host failing inside the Flatpak (now logged)
 - [x] Left-click tray icon toggles listening; right-click opens menu

@@ -28,10 +28,14 @@ bzip2 = "0.6"
 serde = { version = "1", features = ["derive"] }
 toml = "1"
 serde_json = "1"
+# Setup/Settings windows (D-001): software renderer only, so no GPU permission is needed.
+slint = { version = "1.18", default-features = false, features = ["std", "compat-1-2", "renderer-software", "accessibility", "backend-winit-wayland"] }
 zbus = { version = "6", default-features = false, features = ["tokio"] }
 
 [dev-dependencies]
 hound = "3"
+# PNG output for the offscreen UI screenshots (examples/ui_shots.rs); already in the tree via Slint.
+png = "0.18"
 
 [features]
 # Test-only hooks: WAV instead of mic, direct KWin EIS, autorun. Never shipped.
