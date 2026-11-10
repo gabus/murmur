@@ -61,19 +61,41 @@ async fn run() -> Result<()> {
     .context("starting ASR worker")?;
 
     let (out_tx, out_rx) = mpsc::unbounded_channel();
-    let output = Output::spawn(
-        EisSource::Portal {
-            token_path: state.join("remote-desktop.token"),
-        },
-        out_tx,
-    );
+    let source = EisSource::Portal {
+        token_path: state.join("remote-desktop.token"),
+    };
+    #[cfg(feature = "dev-harness")]
+    let source = if std::env::var("MURMUR_DEV_EIS").as_deref() == Ok("kwin-direct") {
+        EisSource::KwinDirect
+    } else {
+        source
+    };
+    let output = Output::spawn(source, out_tx);
 
     let (hk_tx, hk_rx) = mpsc::unbounded_channel();
-    let _hotkey = Hotkey::start(hk_tx)
-        .await
-        .context("binding the global shortcut")?;
+    let use_hotkey =
+        !cfg!(feature = "dev-harness") || std::env::var_os("MURMUR_DEV_NO_HOTKEY").is_none();
+    let _hotkey = if use_hotkey {
+        Some(
+            Hotkey::start(hk_tx)
+                .await
+                .context("binding the global shortcut")?,
+        )
+    } else {
+        None
+    };
 
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+    #[cfg(feature = "dev-harness")]
+    if std::env::var_os("MURMUR_DEV_AUTORUN").is_some() {
+        // Start listening now; quit (which finishes the phrase) when the WAV ends.
+        let _ = cmd_tx.send(Command::Toggle);
+        let tx = cmd_tx.clone();
+        tokio::spawn(async move {
+            murmur::dev::EOF.notified().await;
+            let _ = tx.send(Command::Quit);
+        });
+    }
     let (status_tx, mut status_rx) = watch::channel(Status::Idle);
     tokio::spawn(async move {
         while status_rx.changed().await.is_ok() {

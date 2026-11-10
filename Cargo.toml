@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+hound = { version = "3", optional = true }
 anyhow = "1.0.104"
 ashpd = { version = "0.14", default-features = false, features = ["tokio", "global_shortcuts", "remote_desktop", "screencast", "clipboard"] }
 cpal = { version = "0.18", features = ["pulseaudio"] }
@@ -19,3 +20,7 @@ xkbcommon = "0.9"
 
 [dev-dependencies]
 hound = "3"
+
+[features]
+# Test-only hooks: WAV instead of mic, direct KWin EIS, autorun. Never shipped.
+dev-harness = ["dep:hound"]

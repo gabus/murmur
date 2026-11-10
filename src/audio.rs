@@ -51,7 +51,7 @@ impl Level {
     pub fn get(&self) -> f32 {
         f32::from_bits(self.0.load(Ordering::Relaxed))
     }
-    fn set(&self, v: f32) {
+    pub(crate) fn set(&self, v: f32) {
         self.0.store(v.to_bits(), Ordering::Relaxed);
     }
 }
@@ -70,6 +70,11 @@ impl Capture {
         let thread = std::thread::Builder::new()
             .name("murmur-audio".into())
             .spawn(move || {
+                #[cfg(feature = "dev-harness")]
+                if let Some(path) = std::env::var_os("MURMUR_DEV_AUDIO") {
+                    crate::dev::play_file(path.into(), sink, on_error, level, ready_tx, stop_rx);
+                    return;
+                }
                 let stream = match open(sink, on_error, level) {
                     Ok(s) => s,
                     Err(e) => {
