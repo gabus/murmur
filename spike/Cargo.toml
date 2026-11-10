@@ -1,0 +1,16 @@
+[package]
+name = "spike"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+ashpd = { version = "0.14", features = ["tokio", "global_shortcuts", "remote_desktop", "screencast", "clipboard"] }
+cpal = { version = "0.18", features = ["pulseaudio"] }
+futures-util = "0.3.34"
+hound = "3.5.1"
+reis = { version = "0.7", features = ["tokio"] }
+rustix = { version = "1", features = ["time"] }
+slint = { version = "1.18", default-features = false, features = ["std", "compat-1-2", "renderer-software", "accessibility", "backend-winit-wayland"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal", "fs"] }
+xkbcommon = "0.9"

@@ -51,12 +51,16 @@ Speed is about 3000 chars/s, which doesn't matter given the corruption.
   resolved through the actual keymap, with murmur pressing Shift/AltGr itself.
 - Result: `The Quick Brown Fox? Hello, World! (ok) "quoted" 123` was typed **exactly**,
   with no stuck modifiers.
-- **KWin flush stall (KWin bug, worked around).** After the handshake, KWin often stops
-  partway through the seat/device announcements until something else wakes it, such as user
-  input. Idle runs: 0 of 6 got a device within 40 s. With an `ei_connection.sync` request
-  sent right after the handshake (and then every 200 ms until the device resumes): **5 of 5
-  ready in about 5 ms**. `sync` is a standard libei request, so this is harmless on other
-  compositors.
+- **"Flush stall": a `reis` 0.7.1 bug, not KWin's.** After the handshake, events often
+  stopped partway through the seat/device announcements until something else woke the
+  client. Idle runs: 0 of 6 got a device within 40 s. A periodic `sync` poke "fixed" it
+  (5 of 5 in about 5 ms). Root cause, found while testing GNOME: a lost wakeup in
+  `reis::tokio::EiEventStream::poll_next`. After `read()` + `clear_ready()`, when no
+  complete event is buffered it returns `Pending` without re-arming readiness, so no
+  waker is registered. The poke only helped because its timer re-polled the stream.
+  mutter shows the same thing (device in 2 of 8 runs without the poke; 10 of 10 in about
+  3 ms with the reader fixed). The output module therefore uses its own correctly
+  re-arming `AsyncFd` reader and no poke.
 - Characters not in the **active** layout (`ąčę` while on *us*) can't be produced with key
   events, and EI can't switch the layout group. With *lt* active they're on the keymap and
   typeable. `你好` is on no layout. These need the clipboard fallback (README → Output), or
@@ -73,6 +77,32 @@ Speed is about 3000 chars/s, which doesn't matter given the corruption.
   first approval took one dialog.
 - **"Remote control active" indicator on KDE:** not observed by the maintainer during the
   tests (one informal answer; not explicitly checked).
+
+## GNOME (mutter / gnome-shell 50.6, headless in the toolbox)
+
+Tested with `spike/harness/gnome-headless.sh`: private bus with no service activation,
+private runtime/HOME/XDG dirs, `GSETTINGS_BACKEND=memory`. mutter's own
+`org.gnome.Mutter.RemoteDesktop` API (`CreateSession` → `Start` → `ConnectToEIS`) provides
+the EIS fd with no dialog. libei 1.6.0.
+
+- Same as KDE: the seat offers `ei_keyboard` only, with no `ei_text`. Keymap-aware typing
+  of `The Quick Brown Fox? Hello, World! (ok) "quoted" 123` is **exact** on mutter and
+  gnome-shell.
+- `KeyboardModifiers`: one event at connect, then one on every change, including echoes
+  of murmur's own Shift (0x1). The hold-back logic must look only at Ctrl, Alt and Super.
+- Held Ctrl from another EIS device shows up as `depressed=0x4` about 0.1 ms later. The
+  typed letters become Ctrl+letter and nothing is inserted, so the hold-back plan applies
+  to GNOME too.
+- Layouts (gnome-shell with `sources=[us, lt]`): the keymap has both, and `group` follows
+  the active source. With lt active, `ąčę` is typed exactly; with us, they're skipped.
+- **Never call the session's `SetKeymap`**: it segfaults mutter and gnome-shell 50.6 (3 of
+  3). `KeymapCapabilities` is empty.
+- Harness focus quirks: the headless seat has no keyboard until an EIS keyboard connects.
+  gnome-shell starts in the overview, which grabs focus. A window mapped before the shell
+  has seen a key event isn't reliably activated, so the harness sends one warm-up EIS
+  keypress first.
+- **Not tested:** the GNOME portal path (xdg-desktop-portal-gnome dialog, restore token,
+  Flatpak) and a real GNOME session.
 
 ## Automated testing without the user's desktop
 

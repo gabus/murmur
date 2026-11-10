@@ -17,8 +17,8 @@ Goal: prove the two uncertain pieces before writing the real app.
 - [x] Inject a phrase while physically holding Ctrl: does it trigger shortcuts? Can sending explicit modifier-up events first prevent it safely?
 - [x] Measure injection speed (chars/s) for a 100-char phrase
 - [x] Wrap the spike in a minimal Flatpak manifest and confirm both portals work sandboxed
-- [ ] Test on KDE Plasma 6 (primary ✅) and GNOME 48+ (headless mutter in the toolbox, then VM for the portal dialog)
-- [x] Spike EIS typing (ConnectToEIS + reis + keymap-aware keycodes): works on KDE; KWin needs a `sync` poke
+- [x] Test on KDE Plasma 6 (primary ✅) and GNOME 48+ (headless mutter/gnome-shell 50.6 ✅; portal dialog + restore token on GNOME still untested → VM)
+- [x] Spike EIS typing (ConnectToEIS + reis + keymap-aware keycodes): works on KDE and GNOME; the apparent stall was a reis lost-wakeup bug
 - [ ] Investigate cpal PulseAudio host failing inside Flatpak (ALSA fallback works)
 - [x] Write findings in `docs/portal-findings.md`, then go / no-go on the typing approach (go: EIS, D-005)
 

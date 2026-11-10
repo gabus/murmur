@@ -1,0 +1,34 @@
+# Stage-0 spike as a Flatpak (throwaway). Uses the real app ID so portal behaviour
+# (permissions, restore tokens, shortcut bindings) matches what the real app will see.
+# Network is allowed at build time here only; the real manifest vendors cargo sources.
+#   flatpak run org.flatpak.Builder --user --install --force-clean \
+#     --state-dir=.flatpak-builder build-dir spike/io.github.gabus.Murmur.Spike.yml
+app-id: io.github.gabus.Murmur
+runtime: org.freedesktop.Platform
+runtime-version: '26.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: spike
+finish-args:
+  - --socket=wayland
+  - --socket=pulseaudio
+  - --talk-name=org.kde.StatusNotifierWatcher
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+modules:
+  - name: spike
+    buildsystem: simple
+    build-options:
+      build-args:
+        - --share=network
+      env:
+        CARGO_HOME: /run/build/spike/cargo
+    build-commands:
+      - cargo build --release
+      - install -Dm755 target/release/spike /app/bin/spike
+    sources:
+      - type: dir
+        path: .
+        skip:
+          - target

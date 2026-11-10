@@ -224,6 +224,9 @@ toolbox create murmur-dev
 toolbox run -c murmur-dev sudo dnf install -y rust cargo rustfmt clippy gcc-c++ cmake clang pkg-config \
   git alsa-lib-devel pulseaudio-libs-devel libxkbcommon-devel wayland-devel fontconfig-devel \
   python3-aiohttp python3-tomlkit   # last two: flatpak-cargo-generator
+# headless compositor tests (nested KWin runs from the host; GNOME runs in the toolbox)
+toolbox run -c murmur-dev sudo dnf install -y mutter gnome-shell dbus-daemon \
+  gsettings-desktop-schemas dconf systemd libei-utils python3-gobject-base wev
 
 # flatpak builds (one time)
 flatpak install flathub org.flatpak.Builder \
