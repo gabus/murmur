@@ -4,7 +4,8 @@ Live voice dictation for Linux on Wayland. Press a key, talk, and your words are
 typed into whatever app has focus. Press the key again to stop. You can keep
 typing normally the whole time.
 
-> **Status:** planning / pre-alpha. Nothing works yet. See [TODO.md](TODO.md).
+> **Status:** alpha. Dictation works end to end on KDE Plasma 6 (verified in automated nested-KWin
+> tests); Flatpak packaging and release are in progress. See [TODO.md](TODO.md).
 
 ## Goals
 
@@ -198,20 +199,34 @@ permissions. Explicitly **not** requested: `--device=all`, `--filesystem=host`,
 X11. Never used: `/dev/uinput`, evdev, `dotool`/`ydotool`, the `input` group or
 udev rules. They would break the one-click install.
 
-## Architecture (planned)
+## Architecture
+
+The daemon is a tokio app. Blocking work runs on dedicated threads: audio capture, and the
+ASR worker that owns the models. The setup and settings windows run in a separate short-lived
+process (`murmur --ui …`), so the daemon never loads a GUI toolkit while idle.
 
 ```
 src/
-  main.rs      # startup, wiring
-  app.rs       # state machine: Idle ⇄ Listening (model loads in background, audio buffered)
-  hotkey.rs    # GlobalShortcuts portal
-  output.rs    # RemoteDesktop portal typing (+ clipboard fallback)
-  audio.rs     # mic capture, 16 kHz mono, opened only while listening
-  vad.rs       # Silero VAD, end-of-phrase detection
-  asr/         # sherpa-onnx wrapper; re-check and light engines, word committer
-  models.rs    # registry, download, checksum, load/unload
-  tray.rs      # ksni tray icon, menu, states
-  config.rs    # $XDG_CONFIG_HOME/murmur/config.toml
+  main.rs          # startup, wiring; `--ui` runs the window process
+  app.rs           # state machine Idle ⇄ Listening; window state and requests
+  instance.rs      # single instance (D-Bus name), Activate/Toggle methods
+  hotkey.rs        # GlobalShortcuts portal (bind, change, activations)
+  output/          # typing: RemoteDesktop portal → EIS (libei), keymap planning,
+                   #   modifier hold-back, clipboard paste fallback
+  audio.rs         # mic capture (cpal), 16 kHz mono, open only while listening
+  agc.rs           # gain control for quiet microphones
+  vad.rs           # Silero VAD (end of phrase only)
+  asr/             # engines: re-check (Parakeet, Moonshine) with local-agreement
+                   #   committer; light streaming engine; worker thread
+  models.rs        # registry (URLs, sizes, sha256), engine loading
+  model_manager.rs # active model, downloads, config persistence
+  download.rs      # streaming download + sha256 + atomic extract
+  tray.rs, icons.rs# StatusNotifierItem tray, drawn state icons
+  notify.rs        # error notifications (Notification portal)
+  autostart.rs     # Background portal
+  config.rs        # $XDG_CONFIG_HOME/murmur/config.toml
+  ui/              # Slint windows (setup, settings) + daemon↔UI protocol
+  ui_host.rs       # spawns and drives the window process
 ```
 
 ## Development
@@ -243,15 +258,28 @@ Delete it at any time with `toolbox rm -f murmur-dev`.
 ### Build & run
 
 ```sh
-toolbox enter murmur-dev       # then, inside:
-cargo run                      # dev loop
+T="toolbox run -c murmur-dev"
+$T cargo run                    # the daemon (first run opens the setup window)
+$T cargo test                   # unit tests
+bash .claude/skills/murmur-gate/gate.sh   # fmt + clippy -D warnings + tests
 
-# release build as a Flatpak (from the host)
-flatpak run org.flatpak.Builder --user --install --force-clean build-dir io.github.gabus.Murmur.yml
+# integration tests in an invisible nested KWin (never touch the real desktop);
+# need the spike test pad: (cd spike && $T cargo build)
+$T cargo test --test output_nested_kwin -- --ignored
+$T cargo test --features dev-harness --test e2e_nested_kwin -- --ignored   # needs models
+
+# dev tools
+$T cargo run --release --example simulate -- --model parakeet-v3 file.wav   # engine on WAVs
+$T cargo run --example ui_shots -- /tmp/shots                                # window screenshots
+
+# Flatpak (from the host)
+flatpak run org.flatpak.Builder --user --install --force-clean \
+  --state-dir=.flatpak-builder build-dir io.github.gabus.Murmur.yml
 flatpak run io.github.gabus.Murmur
 ```
 
-(Commands are placeholders until the manifest exists.)
+The `dev-harness` cargo feature (never shipped) adds `MURMUR_DEV_AUDIO=<wav>` (a WAV instead of
+the mic), `MURMUR_DEV_EIS=kwin-direct`, `MURMUR_DEV_NO_HOTKEY` and `MURMUR_DEV_AUTORUN`.
 
 ## Implementation stages
 
