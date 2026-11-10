@@ -21,6 +21,22 @@ typing normally the whole time.
   network access is the one-time model download. No telemetry.
 
 
+## Install
+
+```sh
+flatpak install --user https://gabus.github.io/murmur/murmur.flatpakref
+```
+
+Or open `murmur.flatpakref` from the [project page](https://gabus.github.io/murmur/) or the
+[latest release](https://github.com/gabus/murmur/releases) in Discover or GNOME Software. The
+first start opens a one-page setup: shortcut, typing permission, speech model. After that,
+murmur lives in the tray. Requires KDE Plasma 6.1+ or GNOME 48+ on Wayland (see Supported
+desktops).
+
+> **About this project:** murmur's code, tests and packaging were written with AI assistance
+> (Anthropic's Claude), directed and reviewed by the maintainer. It is distributed from its own
+> Flatpak repo, not Flathub ([D-015](docs/decisions.md)).
+
 ## Specification
 
 ### UX specification

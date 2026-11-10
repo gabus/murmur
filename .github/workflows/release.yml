@@ -1,0 +1,131 @@
+# Release (D-015): on a version tag, build the Flatpak offline, publish a GPG-signed Flatpak
+# repo on GitHub Pages (one-click install via murmur.flatpakref) and attach the bundle,
+# .flatpakref and .flatpakrepo to a GitHub Release.
+#
+# One-time setup by the maintainer: docs/release.md (signing key secret, Pages source).
+# NOT YET RUN: written without access to GitHub Actions; expect to iterate on the first tag.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  APP_ID: io.github.gabus.Murmur
+  BRANCH: stable
+  PAGES_URL: https://gabus.github.io/murmur
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-26.08
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore flatpak-builder cache (ONNX Runtime takes ~10 min cold)
+        uses: actions/cache@v4
+        with:
+          path: .flatpak-builder
+          key: flatpak-builder-${{ hashFiles('io.github.gabus.Murmur.yml', 'flatpak/*.yml', 'flatpak/cargo-sources.json') }}
+          restore-keys: flatpak-builder-
+
+      - name: Import the repo signing key
+        env:
+          FLATPAK_GPG_KEY: ${{ secrets.FLATPAK_GPG_KEY }}
+        run: |
+          test -n "$FLATPAK_GPG_KEY" || { echo "secret FLATPAK_GPG_KEY is missing (docs/release.md)"; exit 1; }
+          echo "$FLATPAK_GPG_KEY" | gpg --batch --import
+          KEY_ID=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr/ {print $10; exit}')
+          echo "KEY_ID=$KEY_ID" >> "$GITHUB_ENV"
+          echo "GPG_PUB=$(gpg --export "$KEY_ID" | base64 -w0)" >> "$GITHUB_ENV"
+
+      - name: Build into a signed repo (offline, sandboxed)
+        run: |
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak-builder --user --install-deps-from=flathub --sandbox --force-clean --ccache \
+            --default-branch="$BRANCH" --gpg-sign="$KEY_ID" --repo=repo \
+            build-dir io.github.gabus.Murmur.yml
+          flatpak build-update-repo --gpg-sign="$KEY_ID" --generate-static-deltas --prune repo
+          flatpak build-bundle --gpg-sign="$KEY_ID" \
+            --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
+            repo murmur.flatpak "$APP_ID" "$BRANCH"
+
+      - name: Write .flatpakref, .flatpakrepo and the landing page
+        run: |
+          mkdir -p site
+          mv repo site/repo
+          cat > site/murmur.flatpakref <<EOF
+          [Flatpak Ref]
+          Name=$APP_ID
+          Branch=$BRANCH
+          Title=murmur
+          Url=$PAGES_URL/repo/
+          RuntimeRepo=https://dl.flathub.org/repo/flathub.flatpakrepo
+          IsRuntime=false
+          GPGKey=$GPG_PUB
+          EOF
+          cat > site/murmur.flatpakrepo <<EOF
+          [Flatpak Repo]
+          Title=murmur
+          Url=$PAGES_URL/repo/
+          Homepage=https://github.com/gabus/murmur
+          Comment=Live voice dictation for Wayland
+          GPGKey=$GPG_PUB
+          EOF
+          sed -i 's/^ *//' site/murmur.flatpakref site/murmur.flatpakrepo
+          cp data/icons/io.github.gabus.Murmur.svg site/icon.svg
+          cat > site/index.html <<'EOF'
+          <!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+          <title>murmur</title>
+          <style>body{font:16px/1.5 system-ui,sans-serif;max-width:40rem;margin:3rem auto;padding:0 1rem}
+          a.button{display:inline-block;padding:.6rem 1.2rem;background:#3584e4;color:#fff;border-radius:.4rem;text-decoration:none}
+          code{background:#8882;padding:.1rem .3rem;border-radius:.2rem}</style>
+          <img src="icon.svg" width="64" alt="">
+          <h1>murmur</h1>
+          <p>Live voice dictation for Wayland. Press a key, talk, and your words are typed into the focused app.</p>
+          <p><a class="button" href="murmur.flatpakref">Install</a></p>
+          <p>Or from a terminal: <code>flatpak install --user https://gabus.github.io/murmur/murmur.flatpakref</code></p>
+          <p><a href="https://github.com/gabus/murmur">Source, docs and releases</a></p>
+          EOF
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-files
+          path: |
+            murmur.flatpak
+            site/murmur.flatpakref
+            site/murmur.flatpakrepo
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+      contents: write
+    environment:
+      name: github-pages
+      url: ${{ steps.pages.outputs.page_url }}
+    steps:
+      - id: pages
+        uses: actions/deploy-pages@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-files
+
+      - name: Create the GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            murmur.flatpak
+            site/murmur.flatpakref
+            site/murmur.flatpakrepo

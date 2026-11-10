@@ -54,6 +54,16 @@
 
   <content_rating type="oars-1.1"/>
 
+  <screenshots>
+    <screenshot type="default">
+      <caption>First-run setup: shortcut, typing permission and speech model on one page</caption>
+      <image>https://raw.githubusercontent.com/gabus/murmur/v0.1.0/docs/screenshots/setup.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Settings</caption>
+      <image>https://raw.githubusercontent.com/gabus/murmur/v0.1.0/docs/screenshots/settings.png</image>
+    </screenshot>
+  </screenshots>
   <releases>
     <release version="0.1.0" date="2026-11-10" type="development">
       <description>

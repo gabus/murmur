@@ -90,10 +90,10 @@ Goal: `murmur` daemon, hotkey toggles listening, phrases get typed.
 
 ## Stage 6: Release
 
-- [ ] Tag `v0.1.0`; GitHub release with `.flatpak` bundle + `.flatpakref`
-- [ ] Install instructions in README
-- [ ] Screenshots / short GIF
-- [ ] Submit to Flathub; iterate on review. Flathub's generative-AI policy bans AI-generated or AI-assisted content in Flathub manifests and AI-opened submission PRs, so the maintainer writes those (see `docs/packaging.md`)
+- [ ] Tag `v0.1.0`; GitHub release with `.flatpak` bundle + `.flatpakref`: automated by `.github/workflows/release.yml` (self-hosted repo on Pages, D-015); maintainer does the one-time setup and pushes the tag (`docs/release.md`)
+- [x] Install instructions in README
+- [x] Screenshots (docs/screenshots, metainfo); a short GIF is still open
+- [ ] (Optional, later; D-015) Submit to Flathub; iterate on review. Flathub's generative-AI policy bans AI-generated or AI-assisted content in Flathub manifests and AI-opened submission PRs, so the maintainer writes those (see `docs/packaging.md`)
 
 ## Stage 7: Later
 
