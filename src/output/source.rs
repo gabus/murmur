@@ -24,7 +24,7 @@ use tracing::{debug, warn};
 
 use super::{
     EisSource,
-    clipboard::{ClipboardAccess, PortalClipboard},
+    clipboard::{ClipboardAccess, EmptyRead, PortalClipboard},
 };
 
 /// KWin's `connectToEIS` capability bit for a keyboard (same value as the portal's).
@@ -228,7 +228,13 @@ async fn open_portal(token_path: &Path) -> Result<(OwnedFd, SessionHandle), Sour
         Ok((fd, clipboard)) => {
             let clipboard = match clipboard {
                 Some(clipboard) => {
-                    match PortalClipboard::start(clipboard, Arc::clone(&session)).await {
+                    match PortalClipboard::start(
+                        clipboard,
+                        Arc::clone(&session),
+                        EmptyRead::for_desktop(crate::portal::on_gnome()),
+                    )
+                    .await
+                    {
                         Ok(clipboard) => Some(Arc::new(clipboard)),
                         Err(e) => {
                             warn!("clipboard access granted but unusable; not pasting: {e}");

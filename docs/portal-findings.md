@@ -2,7 +2,8 @@
 
 Spike code: `spike/` (throwaway). Unless noted, everything was **tested on KDE Plasma 6.7.5,
 KWin 6.7.5, xdg-desktop-portal 1.22.1, xdg-desktop-portal-kde 6.7.5, Fedora 44, Wayland**,
-running from the `murmur-dev` toolbox as a host app. GNOME is **not tested yet**.
+running from the `murmur-dev` toolbox as a host app. GNOME: headless only, see the two GNOME
+sections.
 
 ## Running outside Flatpak (toolbox/host)
 
@@ -101,8 +102,84 @@ the EIS fd with no dialog. libei 1.6.0.
   gnome-shell starts in the overview, which grabs focus. A window mapped before the shell
   has seen a key event isn't reliably activated, so the harness sends one warm-up EIS
   keypress first.
-- **Not tested:** the GNOME portal path (xdg-desktop-portal-gnome dialog, restore token,
-  Flatpak) and a real GNOME session.
+- The portal path is covered in the next section. **Not tested:** the Flatpak and a real
+  GNOME session.
+- **The harness must also replace the system bus.** In the toolbox, the host's system bus is
+  shared, and gnome-shell registers a geoclue agent at startup (`AddAgent`, whatever
+  `org.gnome.system.location enabled` says; its default is already `false`). That
+  D-Bus-activated the host's geoclue, which SELinux then stopped from reading the toolbox
+  process's `/proc/<pid>` (dozens of desktop alerts). Both harnesses now give the session a
+  private system bus without service activation (`DBUS_SYSTEM_BUS_ADDRESS`), and the Rust one
+  asserts it for the shell and the portals. After a run, no new geoclue process.
+
+## Real GNOME portal on a headless gnome-shell (`tests/portal_headless_gnome.rs`, tested)
+
+Versions (toolbox, `rpm -q`): gnome-shell 50.6, mutter 50.6, xdg-desktop-portal 1.22.1,
+xdg-desktop-portal-gnome 50.0, gnome-control-center 50.4 (its GlobalShortcuts provider), libei
+1.6.0, gtk4 4.22.5, gjs 1.88.1. Everything runs in the toolbox on private session and system
+buses with no service activation, a private runtime dir and `XDG_*` dirs, and
+`GSETTINGS_BACKEND=memory`. gnome-shell runs with its hidden `--unsafe-mode`, so the harness can
+use `Eval` and `Screenshot`; the portal path doesn't depend on that. Dialogs are answered from a
+second EIS client (mutter's own RemoteDesktop API). The shortcuts provider quits when idle, so
+the harness restarts it, standing in for D-Bus activation. murmur runs as a host app.
+**Not covered:** the Flatpak sandbox, a real session (logind, gsd, dconf, the AppIndicator
+extension), other GNOME versions.
+
+- Exposed: RemoteDesktop **v2** (`AvailableDeviceTypes` 7), Clipboard v1, **GlobalShortcuts v1**
+  (no `ConfigureShortcuts`), Background v2, Notification v1.
+- **RemoteDesktop dialog** (xdg-desktop-portal-gnome, "Remote Desktop", Cancel / Share): it
+  doesn't name the app. *Remember This Selection* is checked and *Allow Clipboard Access* is on
+  by default, but **Allow Remote Interaction is off and Share stays disabled until it's
+  switched on**. Keyboard: Tab, Space, Alt+S; Escape denies (→ `PermissionDenied`). It took
+  focus over the test pad.
+- Approve → `Ready`, restore token saved. The token restores in about 14 ms with no dialog,
+  and the same token value comes back.
+- **"Remote control active" indicator:** an orange "Stop Screen Sharing" button
+  (screencast icon plus stop) in the top bar for as long as murmur's session is open, also for
+  typing-only sessions. Clicking it (`_stopSharing()`) ends the session → `Disconnected`, and
+  the next word reconnects with the token and no dialog.
+- Typing `Hello, World! ` into a GTK 4 test pad (`tests/harness/gtk-testpad.js`): exact.
+- **The Slint test pad can't paste on GNOME:** its clipboard (arboard → wl-clipboard-rs) needs a
+  data-control protocol, which mutter lacks. GTK pastes through `wl_data_device`, so the GNOME
+  tests use a GTK pad. murmur's own Slint windows log the same arboard warning (they don't
+  paste).
+- **Paste fallback works:** `mąstau ` and `ąžuolas ` on layout us were pasted exactly in about
+  110 ms, and the previous text clipboard was restored, both when it was copied before the
+  session and during it. With Caps Lock on, GTK still pastes (it matches Ctrl+V by key).
+- **Clipboard reads differ from KDE.** Neither announces the owner at `Start`. For a type the
+  owner doesn't offer, GNOME answers at once with **no data** (KDE never answers); for an empty
+  clipboard it answers with an error (KDE: no data). **Bug found and fixed** in
+  `src/output/clipboard.rs`: with an image (e.g. a screenshot) copied before murmur's session,
+  every text type read as empty text, so murmur pasted and the image was lost. A text owner also
+  came back with empty extra types. Now, on GNOME (`XDG_CURRENT_DESKTOP`), an empty answer to an
+  unannounced type means "not offered": the image is kept and the word is typed without `ą`,
+  plus `Unmapped`, in about 2 ms.
+- Another app's copy reaches murmur in a few milliseconds (mutter → backend → frontend). A word
+  pasted within that window would restore murmur's older copy (not seen in use; the test waits
+  200 ms).
+- **A token granted without clipboard access isn't asked again** (KDE asks): GNOME restores the
+  session without the clipboard, so nothing is pasted until the permission is reset.
+- **Backend killed** → `Disconnected`; reconnecting without a backend → `Unavailable`; after a
+  restart, `retry` reconnects with the token and no dialog. But **xdg-desktop-portal 1.22.1 then
+  refuses every `RequestClipboard` with "Invalid state"** until the frontend itself restarts, so
+  pasting is off and typing works. This is a frontend issue.
+- **GlobalShortcuts:** binding shows gnome-control-center's "Add Keyboard Shortcuts" dialog
+  (Alt+A adds it; Return opens the row's editor, which makes the shell ask to "Allow inhibiting
+  shortcuts"). **Super+H never fires on stock GNOME**: it is "Hide window", so the shell can't
+  grab it, and the dialog accepts it without warning. Hence D-016: Super+Alt+H on GNOME. Bound
+  as `Press <Alt><Super>h`, which murmur now shows as `Alt+Super+H` (fixed in `src/hotkey.rs`).
+  Pressing it on an EIS keyboard → `Toggle` in about 3 ms (`Activated` and `Deactivated` carry a
+  real timestamp and an `activation_token`). `configure()` → `ConfigureFailed("This interface
+  requires version 2, but 1 is available")`; the setup window disables Change… and says to use
+  the desktop's settings. A new session rebinds without a dialog (in-memory settings here;
+  across logins untested).
+- **Setup window:** the real daemon with a fresh profile (dev model cache linked in, so no
+  download) shows the Slint setup window and the shortcuts dialog on gnome-shell. After Add,
+  the window shows `Alt+Super+H`, Typing permission *Allow…*, and the model ready. With no
+  StatusNotifierWatcher, it logs `no system tray available` and keeps running.
+- **Not tested:** *Allow…* in the setup window (needs a click or keyboard focus in Slint), the
+  Background and Notification portals, Super+H on a real session with gnome-settings-daemon,
+  and whether bindings and tokens survive a re-login.
 
 ## Output module on nested KWin 6.7.5 (`tests/output_nested_kwin.rs`, tested)
 

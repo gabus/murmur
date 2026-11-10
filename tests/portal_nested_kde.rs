@@ -22,6 +22,7 @@ use ashpd::desktop::{
     CreateSessionOptions, PersistMode,
     remote_desktop::{DeviceType, RemoteDesktop, SelectDevicesOptions, StartOptions},
 };
+use harness::{assert_no_unmapped, expect_event, focus, type_words, wait_event};
 use murmur::output::{EisSource, Output, OutputEvent};
 use tokio::sync::mpsc;
 
@@ -33,8 +34,6 @@ const WAIT: Duration = Duration::from_secs(5);
 /// Stands in for a copied image: only the mime type matters.
 const PNG: &[u8] = b"\x89PNG\r\n\x1a\nnot really an image";
 const UTF8: &str = "text/plain;charset=utf-8";
-
-type Events = mpsc::UnboundedReceiver<OutputEvent>;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs the host's KWin, portals and wl-clipboard, and the spike test pad; see the file header"]
@@ -359,79 +358,4 @@ async fn assert_clipboard(env: &harness::ChildEnv, want: &[u8]) {
         Some(String::from_utf8_lossy(want)),
         "previous clipboard not restored"
     );
-}
-
-async fn type_words(out: &Output, text: &str) {
-    for word in text.split_inclusive(' ') {
-        out.type_text(word.to_owned());
-    }
-    tokio::time::timeout(WAIT, out.flush())
-        .await
-        .expect("flush timed out");
-}
-
-/// Types a probe word until it lands in the pad (which may get focus a little after a dialog
-/// closes), then returns the settled text, which later checks extend.
-async fn focus(out: &Output, pad: &harness::Pad) -> String {
-    for _ in 0..20 {
-        out.type_text("probe ".into());
-        out.flush().await;
-        let landed = tokio::time::timeout(Duration::from_secs(1), async {
-            while !pad.text().ends_with("probe ") {
-                tokio::time::sleep(Duration::from_millis(25)).await;
-            }
-        })
-        .await;
-        if landed.is_ok() {
-            return pad.settle(Duration::from_millis(300)).await;
-        }
-    }
-    panic!("the test pad never got keyboard focus");
-}
-
-/// Waits for the first event matching `pred`; other events are logged and skipped.
-async fn wait_event(
-    events: &mut Events,
-    what: &str,
-    pred: impl Fn(&OutputEvent) -> bool,
-) -> OutputEvent {
-    let got = tokio::time::timeout(Duration::from_secs(15), async {
-        loop {
-            match events.recv().await {
-                Some(e) if pred(&e) => return e,
-                Some(e) => eprintln!("(event while waiting for {what}: {e:?})"),
-                None => panic!("output event channel closed"),
-            }
-        }
-    })
-    .await;
-    got.unwrap_or_else(|_| panic!("timed out waiting for {what}"))
-}
-
-/// Waits for `want`; a failure event first fails the test.
-async fn expect_event(events: &mut Events, want: OutputEvent) {
-    let failure = |e: &OutputEvent| {
-        matches!(
-            e,
-            OutputEvent::Disconnected(_)
-                | OutputEvent::Unavailable(_)
-                | OutputEvent::PermissionDenied
-        )
-    };
-    let got = wait_event(events, &format!("{want:?}"), |e| *e == want || failure(e)).await;
-    assert_eq!(got, want, "unexpected output event");
-}
-
-fn assert_no_unmapped(events: &mut Events) {
-    while let Ok(e) = events.try_recv() {
-        assert!(
-            !matches!(
-                e,
-                OutputEvent::Unmapped { .. }
-                    | OutputEvent::Disconnected(_)
-                    | OutputEvent::Unavailable(_)
-            ),
-            "unexpected output event {e:?}"
-        );
-    }
 }

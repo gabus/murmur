@@ -16,8 +16,20 @@ use tokio::{sync::mpsc, task::JoinHandle};
 use tracing::{debug, info, warn};
 
 const SHORTCUT_ID: &str = "toggle";
-/// XDG shortcuts spec syntax; the user can change it in the desktop's settings.
+/// The suggested shortcut, in the XDG shortcuts spec syntax (D-016): Super+H, like Windows'
+/// dictation key. The user can change it in the dialog or the desktop's settings.
 const PREFERRED_TRIGGER: &str = "LOGO+h";
+/// On GNOME, Super+H is "Hide window": the shortcut dialog accepts it, but it never fires.
+const PREFERRED_TRIGGER_GNOME: &str = "LOGO+ALT+h";
+
+/// The trigger to suggest (D-016).
+fn preferred_trigger(gnome: bool) -> &'static str {
+    if gnome {
+        PREFERRED_TRIGGER_GNOME
+    } else {
+        PREFERRED_TRIGGER
+    }
+}
 /// Ignore repeated activations closer than this (key bounce / auto-repeat).
 const DEBOUNCE: Duration = Duration::from_millis(250);
 
@@ -84,8 +96,57 @@ fn trigger_of(shortcuts: &[Shortcut]) -> Option<String> {
     shortcuts
         .iter()
         .find(|s| s.id() == SHORTCUT_ID)
-        .map(|s| s.trigger_description().to_owned())
+        .map(|s| readable_trigger(s.trigger_description()))
         .filter(|t| !t.is_empty())
+}
+
+/// GNOME describes a trigger as a sentence with GTK accelerators (`Press <Alt><Super>h`, or
+/// `Press %s or %s` with two). Returns just the keys, the way GNOME Settings shows them
+/// (`Alt+Super+H`); other descriptions (KDE: `Meta+H`) are returned as they are.
+fn readable_trigger(description: &str) -> String {
+    let keys: Vec<String> = description
+        .split_whitespace()
+        .filter_map(gtk_accelerator_label)
+        .collect();
+    if keys.is_empty() {
+        description.to_owned()
+    } else {
+        keys.join(" / ")
+    }
+}
+
+/// `<Alt><Super>h` → `Alt+Super+H`. `None` unless `word` is a GTK accelerator with at least one
+/// modifier.
+fn gtk_accelerator_label(word: &str) -> Option<String> {
+    let mut rest = word.strip_prefix('<')?;
+    let mut parts = Vec::new();
+    loop {
+        let (modifier, after) = rest.split_once('>')?;
+        if modifier.is_empty() || !modifier.chars().all(|c| c.is_ascii_alphanumeric()) {
+            return None;
+        }
+        parts.push(match modifier.to_ascii_lowercase().as_str() {
+            "control" | "ctrl" | "primary" => "Ctrl".to_owned(),
+            "super" => "Super".to_owned(),
+            "alt" => "Alt".to_owned(),
+            "shift" => "Shift".to_owned(),
+            _ => modifier.to_owned(),
+        });
+        match after.strip_prefix('<') {
+            Some(next) => rest = next,
+            None => {
+                rest = after;
+                break;
+            }
+        }
+    }
+    let mut key = rest.chars();
+    let first = key.next()?;
+    if rest.contains(['<', '>']) {
+        return None;
+    }
+    parts.push(first.to_uppercase().chain(key).collect());
+    Some(parts.join("+"))
 }
 
 async fn run(
@@ -101,7 +162,7 @@ async fn run(
             .await?,
     );
     let shortcut = NewShortcut::new(SHORTCUT_ID, "Start or stop dictation")
-        .preferred_trigger(PREFERRED_TRIGGER);
+        .preferred_trigger(preferred_trigger(crate::portal::on_gnome()));
     let bound = portal
         .bind_shortcuts(&session, &[shortcut], None, BindShortcutsOptions::default())
         .await?
@@ -166,4 +227,36 @@ async fn run(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn suggests_super_alt_h_on_gnome_only() {
+        // D-016: Super+H is GNOME's "Hide window".
+        assert_eq!(preferred_trigger(true), "LOGO+ALT+h");
+        assert_eq!(preferred_trigger(false), "LOGO+h");
+    }
+
+    #[test]
+    fn gnome_trigger_descriptions_become_keys() {
+        // xdg-desktop-portal-gnome 50: "Press %s" / "Press %s or %s" with GTK accelerators.
+        assert_eq!(readable_trigger("Press <Alt><Super>h"), "Alt+Super+H");
+        assert_eq!(readable_trigger("Press <Super>h"), "Super+H");
+        assert_eq!(
+            readable_trigger("Press <Control><Shift>space or <Primary>F9"),
+            "Ctrl+Shift+Space / Ctrl+F9"
+        );
+        // A translated sentence keeps working: only the accelerator is used.
+        assert_eq!(readable_trigger("Drücken Sie <Super>d"), "Super+D");
+    }
+
+    #[test]
+    fn other_trigger_descriptions_stay() {
+        for kept in ["Meta+H", "Press F9", "", "<>", "Press <Super>", "a <b c"] {
+            assert_eq!(readable_trigger(kept), kept);
+        }
+    }
 }

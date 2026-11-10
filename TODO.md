@@ -11,7 +11,7 @@ Goal: prove the two uncertain pieces before writing the real app.
 - [x] `cargo new` a throwaway `spike/` binary
 - [x] GlobalShortcuts portal via `ashpd`: register a "toggle" shortcut and print on activation
 - [x] RemoteDesktop portal via `ashpd`: request a keyboard-only session and type `hello wörld ąčę 你好` (keysym path broken on KDE → EIS, see findings)
-- [ ] Check whether `persist_mode` / `restore_token` avoids re-prompting after restart (KDE ✅ + GNOME)
+- [x] Check whether `persist_mode` / `restore_token` avoids re-prompting after restart (KDE ✅, GNOME ✅ headless 50.6, `tests/portal_headless_gnome.rs`)
 - [x] Note any "remote control active" indicator shown by the desktop
 - [x] Inject a phrase while physically typing: how bad is interleaving?
 - [x] Inject a phrase while physically holding Ctrl: does it trigger shortcuts? Can sending explicit modifier-up events first prevent it safely?
@@ -66,7 +66,7 @@ Goal: `murmur` daemon, hotkey toggles listening, phrases get typed.
 - [x] Config file `$XDG_CONFIG_HOME/murmur/config.toml` (model, pause, idle unload, microphone, autostart, paste keys; spacing is fixed by D-002)
 - [x] First-run setup window: shortcut → typing permission → model download (one time only); D-009, verified in a nested KWin with the real daemon
 - [x] Settings window (D-010)
-- [ ] Verify the paste fallback against the real Clipboard portal (KDE ✅ in a nested KWin, `tests/portal_nested_kde.rs`; GNOME pending)
+- [x] Verify the paste fallback against the real Clipboard portal (KDE ✅ in a nested KWin, `tests/portal_nested_kde.rs`; GNOME ✅ headless 50.6, `tests/portal_headless_gnome.rs`)
 - [x] Investigate cpal PulseAudio host failing inside the Flatpak → empty auth cookie; manifest ships a zero cookie via PULSE_COOKIE (verified)
 - [x] Left-click tray icon toggles listening; right-click opens menu
 - [x] Optional audio source picker (config + Settings window)
@@ -85,6 +85,7 @@ Goal: `murmur` daemon, hotkey toggles listening, phrases get typed.
 - [x] Minimal permissions (see README); no `--device=all`, no `--filesystem=host`
 - [x] CI: GitHub Actions building the Flatpak bundle on push (`.github/workflows/flatpak.yml`; not run yet)
 - [ ] Run the CI workflow once on GitHub and check the uploaded bundle
+- [ ] GNOME on a real session (VM): Super+Alt+H with gnome-settings-daemon, *Allow…* in the setup window, the Flatpak, bindings and tokens across re-login
 - [ ] Build and test the Flatpak on aarch64 (Flathub builds x86_64 and aarch64)
 - [x] License chosen and added (GPL-3.0-or-later, D-013)
 
@@ -104,7 +105,7 @@ Goal: `murmur` daemon, hotkey toggles listening, phrases get typed.
 
 ## Open questions
 
-- [ ] Does the RemoteDesktop portal remember permission across restarts on KDE / GNOME? (KDE: yes, see findings)
+- [x] Does the RemoteDesktop portal remember permission across restarts on KDE / GNOME? (KDE: yes; GNOME: yes, headless; see findings)
 - [ ] Does the GlobalShortcuts portal report key release (needed for hold-to-talk)?
 - [x] Is `sherpa-rs` complete enough for streaming + VAD, or do we need our own bindings? → use the official `sherpa-onnx` crate
 - [x] Will Flathub accept prebuilt onnxruntime, or must it be built from source? → from source (Flathub requirements); done (D-014)

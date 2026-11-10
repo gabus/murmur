@@ -66,7 +66,10 @@ and in between it stays out of the way.
 
 A one-time setup window, all on one page ([D-009](docs/decisions.md)):
 
-1. **Shortcut.** Portal dialog where the user picks a key (e.g. `Meta+H`), with a Change button.
+1. **Shortcut.** Portal dialog where the user picks a key. murmur suggests `Super+H`, or
+   `Super+Alt+H` on GNOME, where `Super+H` hides the window ([D-016](docs/decisions.md)). A
+   Change button reopens the desktop's dialog where the portal can (v2). GNOME's portal is v1,
+   so there the shortcut is changed in GNOME Settings.
 2. **Typing permission.** An "Allow…" button opens the RemoteDesktop portal dialog. The
    permission is remembered, so it is never asked again.
 3. **Model.** The default model starts downloading as soon as the window opens, with a
@@ -179,7 +182,7 @@ checksums pinned in `src/models.rs`. Measurements are in [docs/benchmarks.md](do
 | Desktop | Hotkey | Typing | Tray | Notes |
 |---|---|---|---|---|
 | KDE Plasma 6.1+ | ✅ | ✅ | ✅ | Primary target. Typing needs EIS in RemoteDesktop (6.1+); tested on 6.7 |
-| GNOME 48+ | ✅ | ✅ | ⚠️ needs AppIndicator extension | GNOME may show a "remote control" indicator while typing |
+| GNOME 48+ | ✅ Super+Alt+H; change it in GNOME Settings (portal v1) | ✅ | ⚠️ needs AppIndicator extension | Tested headless on 50.6. The permission dialog needs "Allow Remote Interaction" switched on. An orange "Stop Screen Sharing" button shows in the top bar while murmur's session is open |
 | Hyprland | ✅ | ⚠️ to verify | ✅ (with a tray bar) | |
 | Sway / wlroots | ❌ no GlobalShortcuts portal | ⚠️ | ✅ | Unsupported |
 
@@ -261,6 +264,9 @@ toolbox run -c murmur-dev sudo dnf install -y rust cargo rustfmt clippy gcc-c++ 
 # headless compositor tests (nested KWin runs from the host; GNOME runs in the toolbox)
 toolbox run -c murmur-dev sudo dnf install -y mutter gnome-shell dbus-daemon \
   gsettings-desktop-schemas dconf systemd libei-utils python3-gobject-base wev
+# GNOME portal tests (tests/portal_headless_gnome.rs; gjs + GTK 4 come with gnome-shell)
+toolbox run -c murmur-dev sudo dnf install -y xdg-desktop-portal xdg-desktop-portal-gnome \
+  gnome-control-center wl-clipboard wayland-utils
 
 # flatpak builds (one time)
 flatpak install flathub org.flatpak.Builder \

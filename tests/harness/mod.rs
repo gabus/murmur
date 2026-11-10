@@ -8,8 +8,12 @@
 //!
 //! Inside a toolbox (no `kwin_wayland` in the container), KWin runs on the host through
 //! `flatpak-spawn --host --clear-env`, with the environment set explicitly.
+//!
+//! [`gnome`] is the GNOME equivalent: a headless gnome-shell with the GNOME portal stack.
 
 #![allow(dead_code)] // Each test binary uses a different subset.
+
+pub mod gnome;
 
 use std::{
     os::unix::fs::PermissionsExt,
@@ -249,40 +253,8 @@ impl Nested {
     }
 
     async fn start_bus(&mut self) {
-        let conf = self.dir.join("bus.conf");
-        let sock = self.dir.join("bus");
-        std::fs::write(
-            &conf,
-            format!(
-                r#"<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
- "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
-<busconfig>
-  <type>session</type>
-  <listen>unix:path={}</listen>
-  <policy context="default">
-    <allow send_destination="*" eavesdrop="true"/>
-    <allow eavesdrop="true"/>
-    <allow own="*"/>
-  </policy>
-</busconfig>
-"#,
-                sock.display()
-            ),
-        )
-        .expect("write bus.conf");
-        let child = Command::new("dbus-daemon")
-            .arg(format!("--config-file={}", conf.display()))
-            .arg("--nofork")
-            .stdin(Stdio::null())
-            .stdout(log_file(&self.dir, "dbus"))
-            .stderr(log_file(&self.dir, "dbus-err"))
-            .spawn()
-            .expect("spawn dbus-daemon");
+        let child = start_private_bus(&self.dir, "bus").await;
         self.children.push(("dbus-daemon", child));
-        wait_for("private bus socket", Duration::from_secs(5), || async {
-            sock.exists()
-        })
-        .await;
     }
 
     async fn start_kwin(&mut self) {
@@ -333,18 +305,7 @@ impl Nested {
 
     /// Starts the test pad (a text field mirrored to `out`) on the nested display.
     pub fn spawn_pad(&mut self, out: &Path) {
-        let pad = std::env::var_os("MURMUR_TESTPAD")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                Path::new(env!("CARGO_MANIFEST_DIR")).join("spike/target/debug/spike")
-            });
-        assert!(
-            pad.is_file(),
-            "test pad not found at {} (build it with `cd spike && cargo build`, or set \
-             MURMUR_TESTPAD to the spike binary)",
-            pad.display()
-        );
-        let child = Command::new(pad)
+        let child = Command::new(pad_binary())
             .arg("testpad")
             .arg(out)
             .env_clear()
@@ -379,6 +340,60 @@ impl Drop for Nested {
             eprintln!("harness: kept {}", self.dir.display());
         }
     }
+}
+
+/// The spike's test pad binary (`spike testpad <file>`), or `$MURMUR_TESTPAD`.
+fn pad_binary() -> PathBuf {
+    let pad = std::env::var_os("MURMUR_TESTPAD")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("spike/target/debug/spike"));
+    assert!(
+        pad.is_file(),
+        "test pad not found at {} (build it with `cd spike && cargo build`, or set \
+         MURMUR_TESTPAD to the spike binary)",
+        pad.display()
+    );
+    pad
+}
+
+/// Starts a private `dbus-daemon` listening on `<dir>/<name>`, with no service directories (so
+/// no service activation), and waits for its socket. Its config and logs are `<dir>/<name>.conf`
+/// and `<dir>/<name>{,-err}.log`.
+async fn start_private_bus(dir: &Path, name: &str) -> Child {
+    let conf = dir.join(format!("{name}.conf"));
+    let sock = dir.join(name);
+    std::fs::write(
+        &conf,
+        format!(
+            r#"<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <type>session</type>
+  <listen>unix:path={}</listen>
+  <policy context="default">
+    <allow send_destination="*" eavesdrop="true"/>
+    <allow eavesdrop="true"/>
+    <allow own="*"/>
+  </policy>
+</busconfig>
+"#,
+            sock.display()
+        ),
+    )
+    .expect("write bus.conf");
+    let child = Command::new("dbus-daemon")
+        .arg(format!("--config-file={}", conf.display()))
+        .arg("--nofork")
+        .stdin(Stdio::null())
+        .stdout(log_file(dir, name))
+        .stderr(log_file(dir, &format!("{name}-err")))
+        .spawn()
+        .expect("spawn dbus-daemon");
+    wait_for("private bus socket", Duration::from_secs(5), || async {
+        sock.exists()
+    })
+    .await;
+    child
 }
 
 /// Stops a child: SIGTERM first (flatpak-spawn forwards it to the host process), SIGKILL if it
@@ -460,8 +475,10 @@ impl ChildEnv {
         })
     }
 
-    /// Refuses to continue unless the session bus and Wayland display are the nested ones and
-    /// the `org.kde.KWin` on that bus is the nested KWin (its command line has our socket).
+    /// Refuses to continue unless the session bus and Wayland display are the nested ones, X11 is
+    /// out of reach, and the compositor on that bus is ours: the `org.kde.KWin` of a nested KWin
+    /// (its command line has our socket) or the `org.gnome.Shell` of a headless gnome-shell (its
+    /// command line has `--headless` and our socket, and the runtime dir is the private one).
     pub async fn assert_isolated(&self) {
         let bus = std::env::var("DBUS_SESSION_BUS_ADDRESS").unwrap_or_default();
         assert_eq!(bus, self.bus, "session bus is not the nested one");
@@ -476,19 +493,61 @@ impl ChildEnv {
             self.socket,
             "WAYLAND_DISPLAY is not the nested socket"
         );
-        let pid = kwin_pid(&bus)
-            .await
-            .expect("org.kde.KWin on the nested bus");
+        assert!(
+            std::env::var_os("DISPLAY").is_none(),
+            "DISPLAY is set: X11 clients could reach the real desktop"
+        );
+        let (pid, flag, compositor) = if let Some(pid) = kwin_pid(&bus).await {
+            (pid, "--socket", "KWin")
+        } else {
+            let pid = owner_pid(&bus, "org.gnome.Shell")
+                .await
+                .expect("org.kde.KWin or org.gnome.Shell on the nested bus");
+            let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
+            assert!(
+                runtime.is_some_and(|r| r.starts_with(&self.dir)),
+                "XDG_RUNTIME_DIR is not the private one in the harness directory"
+            );
+            let system = self.private_system_bus();
+            assert!(
+                process_env(pid).contains(&format!("DBUS_SYSTEM_BUS_ADDRESS={system}")),
+                "gnome-shell (pid {pid}) is on the host's system bus"
+            );
+            (pid, "--wayland-display", "headless gnome-shell")
+        };
         let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
         let args: Vec<&[u8]> = cmdline.split(|&b| b == 0).collect();
         let ours = args
             .windows(2)
-            .any(|w| w[0] == b"--socket" && w[1] == self.socket.as_bytes());
+            .any(|w| w[0] == flag.as_bytes() && w[1] == self.socket.as_bytes());
+        let headless = flag == "--socket" || args.contains(&b"--headless".as_slice());
         assert!(
-            ours,
-            "org.kde.KWin on the nested bus (pid {pid}) is not the nested KWin"
+            ours && headless,
+            "the compositor on the nested bus (pid {pid}) is not the {compositor}"
         );
     }
+}
+
+impl ChildEnv {
+    /// The private system bus (headless GNOME): this process's `DBUS_SYSTEM_BUS_ADDRESS`, which
+    /// must be in the harness directory.
+    fn private_system_bus(&self) -> String {
+        let system = std::env::var("DBUS_SYSTEM_BUS_ADDRESS").unwrap_or_default();
+        assert!(
+            system.starts_with(&format!("unix:path={}/", self.dir.display())),
+            "DBUS_SYSTEM_BUS_ADDRESS {system:?} is not the private one in the harness directory"
+        );
+        system
+    }
+}
+
+/// The environment of a local process (`NAME=value` entries), empty if unreadable.
+fn process_env(pid: u32) -> Vec<String> {
+    std::fs::read(format!("/proc/{pid}/environ"))
+        .unwrap_or_default()
+        .split(|&b| b == 0)
+        .map(|v| String::from_utf8_lossy(v).into_owned())
+        .collect()
 }
 
 /// The test pad's text, mirrored to a file.
@@ -675,6 +734,7 @@ fn now_us() -> u64 {
 }
 
 impl RawKeyboard {
+    /// A keyboard from the nested KWin's `connectToEIS`.
     pub async fn connect(bus: &str) -> Self {
         let conn = connect(bus).await;
         let reply = conn
@@ -688,7 +748,13 @@ impl RawKeyboard {
             .await
             .expect("connectToEIS");
         let (fd, _cookie): (zbus::OwnedFd, i32) = reply.body().deserialize().expect("reply");
-        let socket = EiSocket::new(fd.into());
+        Self::from_eis(conn, fd.into()).await
+    }
+
+    /// Handshakes on an EIS socket and waits for a resumed keyboard. `conn` is kept open: the
+    /// compositor may end the EIS session when it closes.
+    async fn from_eis(conn: zbus::Connection, fd: std::os::fd::OwnedFd) -> Self {
+        let socket = EiSocket::new(fd);
         let mut handshaker = reis::handshake::EiHandshaker::new(
             "murmur-test-keyboard",
             ei::handshake::ContextType::Sender,
@@ -812,6 +878,16 @@ impl RawKeyboard {
         self.sync().await;
     }
 
+    /// Presses `keys` in order (e.g. Alt, S), then releases them in reverse order.
+    pub async fn tap(&mut self, keys: &[u32]) {
+        for &key in keys {
+            self.key(key, true).await;
+        }
+        for &key in keys.iter().rev() {
+            self.key(key, false).await;
+        }
+    }
+
     /// Waits for a modifiers event matching `pred` on depressed mods (with a timeout).
     pub async fn wait_mods(&mut self, what: &str, pred: impl Fn(u32) -> bool) {
         let ok = tokio::time::timeout(Duration::from_secs(5), async {
@@ -851,14 +927,39 @@ impl ChildEnv {
         HostProcess(name, child)
     }
 
-    /// Refuses to continue unless the portal frontend and the KDE backend on the nested bus run
-    /// with the nested bus and Wayland display, so their dialogs can only appear in the nested
-    /// KWin.
+    /// Refuses to continue unless the portal frontend and the desktop's backend (KDE, or GNOME
+    /// with its shortcuts provider) on the nested bus run with the nested bus and Wayland
+    /// display, so their dialogs can only appear in the nested compositor.
     pub async fn assert_portals_isolated(&self) {
-        for name in [
-            "org.freedesktop.portal.Desktop",
-            "org.freedesktop.impl.portal.desktop.kde",
-        ] {
+        let kde = has_owner(&self.bus, "org.freedesktop.impl.portal.desktop.kde").await;
+        let backends = if kde {
+            &["org.freedesktop.impl.portal.desktop.kde"][..]
+        } else {
+            &[
+                "org.freedesktop.impl.portal.desktop.gnome",
+                "org.gnome.Settings.GlobalShortcutsProvider",
+            ][..]
+        };
+        let mut wants = vec![
+            format!("DBUS_SESSION_BUS_ADDRESS={}", self.bus),
+            format!("WAYLAND_DISPLAY={}", self.socket),
+        ];
+        if !kde {
+            // The GNOME stack runs in the toolbox, with a private system bus too.
+            wants.push(format!(
+                "DBUS_SYSTEM_BUS_ADDRESS={}",
+                self.private_system_bus()
+            ));
+        }
+        for &name in ["org.freedesktop.portal.Desktop"].iter().chain(backends) {
+            // GNOME's shortcuts provider quits when idle and the harness restarts it.
+            let bus = &self.bus;
+            wait_for(
+                &format!("{name} on the nested bus"),
+                Duration::from_secs(10),
+                || async move { has_owner(bus, name).await },
+            )
+            .await;
             let pid = owner_pid(&self.bus, name)
                 .await
                 .unwrap_or_else(|| panic!("{name} on the nested bus"));
@@ -872,10 +973,7 @@ impl ChildEnv {
                     .unwrap_or_default(),
             };
             let vars: Vec<&[u8]> = environ.split(|&b| b == 0).collect();
-            for want in [
-                format!("DBUS_SESSION_BUS_ADDRESS={}", self.bus),
-                format!("WAYLAND_DISPLAY={}", self.socket),
-            ] {
+            for want in &wants {
                 assert!(
                     vars.contains(&want.as_bytes()),
                     "{name} (pid {pid}) is not the nested one: no {want}"
@@ -988,6 +1086,12 @@ impl ChildEnv {
 
 /// The `version` property of portal `interface` on `bus`, if the frontend exposes it.
 pub async fn portal_version(bus: &str, interface: &str) -> Option<u32> {
+    portal_property(bus, interface, "version").await
+}
+
+/// A `u32` property of portal `interface` on `bus` (e.g. RemoteDesktop's
+/// `AvailableDeviceTypes`), if the frontend exposes it.
+pub async fn portal_property(bus: &str, interface: &str, property: &str) -> Option<u32> {
     let reply = connect(bus)
         .await
         .call_method(
@@ -995,7 +1099,7 @@ pub async fn portal_version(bus: &str, interface: &str) -> Option<u32> {
             "/org/freedesktop/portal/desktop",
             Some("org.freedesktop.DBus.Properties"),
             "Get",
-            &(interface, "version"),
+            &(interface, property),
         )
         .await
         .ok()?;
@@ -1172,4 +1276,87 @@ pub async fn kill_portal_backend(bus: &str) {
         .status()
         .is_ok_and(|s| s.success());
     assert!(killed, "kill the KDE portal backend (pid {pid})");
+}
+
+// --- Driving `murmur::output::Output` (tests/portal_nested_kde.rs, tests/portal_headless_gnome.rs) ---
+
+pub type Events = tokio::sync::mpsc::UnboundedReceiver<murmur::output::OutputEvent>;
+
+/// Queues `text` word by word, as the daemon does, and waits until it's typed.
+pub async fn type_words(out: &murmur::output::Output, text: &str) {
+    for word in text.split_inclusive(' ') {
+        out.type_text(word.to_owned());
+    }
+    tokio::time::timeout(Duration::from_secs(5), out.flush())
+        .await
+        .expect("flush timed out");
+}
+
+/// Types a probe word until it lands in the pad (which may get focus a little after a dialog
+/// closes), then returns the settled text, which later checks extend.
+pub async fn focus(out: &murmur::output::Output, pad: &Pad) -> String {
+    for _ in 0..20 {
+        out.type_text("probe ".into());
+        out.flush().await;
+        let landed = tokio::time::timeout(Duration::from_secs(1), async {
+            while !pad.text().ends_with("probe ") {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await;
+        if landed.is_ok() {
+            return pad.settle(Duration::from_millis(300)).await;
+        }
+    }
+    panic!("the test pad never got keyboard focus");
+}
+
+/// Waits for the first event matching `pred`; other events are logged and skipped.
+pub async fn wait_event(
+    events: &mut Events,
+    what: &str,
+    pred: impl Fn(&murmur::output::OutputEvent) -> bool,
+) -> murmur::output::OutputEvent {
+    let got = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            match events.recv().await {
+                Some(e) if pred(&e) => return e,
+                Some(e) => eprintln!("(event while waiting for {what}: {e:?})"),
+                None => panic!("output event channel closed"),
+            }
+        }
+    })
+    .await;
+    got.unwrap_or_else(|_| panic!("timed out waiting for {what}"))
+}
+
+/// Waits for `want`; a failure event first fails the test.
+pub async fn expect_event(events: &mut Events, want: murmur::output::OutputEvent) {
+    use murmur::output::OutputEvent;
+    let failure = |e: &OutputEvent| {
+        matches!(
+            e,
+            OutputEvent::Disconnected(_)
+                | OutputEvent::Unavailable(_)
+                | OutputEvent::PermissionDenied
+        )
+    };
+    let got = wait_event(events, &format!("{want:?}"), |e| *e == want || failure(e)).await;
+    assert_eq!(got, want, "unexpected output event");
+}
+
+/// Fails on any queued `Unmapped`, `Disconnected` or `Unavailable` event.
+pub fn assert_no_unmapped(events: &mut Events) {
+    use murmur::output::OutputEvent;
+    while let Ok(e) = events.try_recv() {
+        assert!(
+            !matches!(
+                e,
+                OutputEvent::Unmapped { .. }
+                    | OutputEvent::Disconnected(_)
+                    | OutputEvent::Unavailable(_)
+            ),
+            "unexpected output event {e:?}"
+        );
+    }
 }

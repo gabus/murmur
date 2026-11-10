@@ -137,17 +137,39 @@ pub(crate) trait ClipboardAccess: Send + Sync {
     fn served(&self) -> watch::Receiver<u64>;
 }
 
+/// What the portal backend means when it answers a read of a type the owner didn't announce
+/// with no data (`docs/portal-findings.md`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EmptyRead {
+    /// The clipboard is empty. xdg-desktop-portal-kde answers an empty clipboard with no data
+    /// and never answers types the owner doesn't offer.
+    Empty,
+    /// The owner doesn't offer that type. xdg-desktop-portal-gnome answers those with no data,
+    /// and an empty clipboard with an error, so an image (with no text) reads as empty text.
+    NotOffered,
+}
+
+impl EmptyRead {
+    /// The meaning on GNOME, or elsewhere.
+    pub(crate) fn for_desktop(gnome: bool) -> Self {
+        if gnome { Self::NotOffered } else { Self::Empty }
+    }
+}
+
 /// Decides what to keep of the previous clipboard after reading it. `announced`: the owner
-/// announced these types (`false`: nothing was announced, so the text types were tried).
+/// announced these types (`false`: nothing was announced, so the text types were tried, and
+/// `empty` says what an answer with no data means).
 ///
 /// A read that timed out ([`ClipError::TimedOut`]) means there is content that can't be saved:
 /// for an announced type, the whole snapshot fails. When nothing was announced, it means the
 /// owner doesn't offer that type (KDE answers reads of an empty clipboard with no data, but
-/// doesn't answer at all for types the owner doesn't offer); the types that were read are
-/// kept, and if none could be, the content can't be restored, so it must not be overwritten.
+/// doesn't answer at all for types the owner doesn't offer), as does an empty answer on GNOME;
+/// the types that were read are kept, and if none could be, the content can't be restored, so
+/// it must not be overwritten.
 pub(crate) fn keep_snapshot(
     announced: bool,
     reads: Vec<(String, Result<Vec<u8>, ClipError>)>,
+    empty: EmptyRead,
 ) -> Result<Offer, ClipError> {
     let mut kept = Vec::new();
     let mut total = 0usize;
@@ -155,6 +177,10 @@ pub(crate) fn keep_snapshot(
     let mut unanswered = 0usize;
     for (mime_type, read) in reads {
         match read {
+            Ok(data) if data.is_empty() && !announced && empty == EmptyRead::NotOffered => {
+                debug!(mime_type, "the clipboard owner doesn't offer this type");
+                unanswered += 1;
+            }
             Ok(data) => {
                 total += data.len();
                 if total > MAX_TOTAL_BYTES {
@@ -209,6 +235,8 @@ struct Inner {
     session: Arc<Session<RemoteDesktop>>,
     state: Mutex<State>,
     served: watch::Sender<u64>,
+    /// What an empty answer to a read of an unannounced type means.
+    empty: EmptyRead,
 }
 
 impl Inner {
@@ -286,10 +314,12 @@ pub(crate) struct PortalClipboard {
 
 impl PortalClipboard {
     /// Starts answering `SelectionTransfer` and tracking `SelectionOwnerChanged` for
-    /// `session`. Returns once subscribed to both signals.
+    /// `session`. Returns once subscribed to both signals. `empty`: how the portal backend
+    /// answers reads of types the owner doesn't offer.
     pub(crate) async fn start(
         clipboard: Clipboard,
         session: Arc<Session<RemoteDesktop>>,
+        empty: EmptyRead,
     ) -> Result<Self, ClipError> {
         let portal = |e: zbus::Error| ClipError::Portal(e.to_string());
         let mut transfers = clipboard
@@ -310,6 +340,7 @@ impl PortalClipboard {
                 owner: Owner::Unknown,
             }),
             served,
+            empty,
         });
         let server = Arc::clone(&inner);
         let mine = move |path: &ObjectPath<'_>| ours.as_ref().is_none_or(|o| o.as_ref() == *path);
@@ -346,16 +377,17 @@ impl PortalClipboard {
 }
 
 impl PortalClipboard {
-    /// Saves the selection of an owner that wasn't announced (KDE announces changes only, none
-    /// at `Start`): tries the text types, all at once, because KDE never answers for those the
-    /// owner doesn't offer. Remembers content that can't be read until the owner changes.
+    /// Saves the selection of an owner that wasn't announced (KDE and GNOME announce changes
+    /// only, none at `Start`): tries the text types, all at once, because KDE never answers for
+    /// those the owner doesn't offer. Remembers content that can't be read until the owner
+    /// changes.
     async fn probe(&self) -> Result<Offer, ClipError> {
         let reads = futures_util::future::join_all(TEXT_MIME_TYPES.map(|mime_type| async move {
             let read = self.inner.read(mime_type, PROBE_TIMEOUT).await;
             (mime_type.to_owned(), read)
         }))
         .await;
-        let kept = keep_snapshot(false, reads);
+        let kept = keep_snapshot(false, reads, self.inner.empty);
         if matches!(kept, Err(ClipError::Unreadable)) {
             let mut state = self.inner.state();
             // Unless the owner changed during the probe.
@@ -394,7 +426,7 @@ impl ClipboardAccess for PortalClipboard {
                     break;
                 }
             }
-            keep_snapshot(true, reads)
+            keep_snapshot(true, reads, self.inner.empty)
         })
     }
 
@@ -616,6 +648,96 @@ mod tests {
         Err(ClipError::Portal("no such type".into()))
     }
 
+    /// [`keep_snapshot`] with xdg-desktop-portal-kde's answers.
+    fn kde(
+        announced: bool,
+        reads: Vec<(String, Result<Vec<u8>, ClipError>)>,
+    ) -> Result<Offer, ClipError> {
+        keep_snapshot(announced, reads, EmptyRead::Empty)
+    }
+
+    /// [`keep_snapshot`] with xdg-desktop-portal-gnome's answers.
+    fn gnome(
+        announced: bool,
+        reads: Vec<(String, Result<Vec<u8>, ClipError>)>,
+    ) -> Result<Offer, ClipError> {
+        keep_snapshot(announced, reads, EmptyRead::NotOffered)
+    }
+
+    /// The text types murmur tries when nothing was announced, each answered with `answer`.
+    fn probed(
+        answer: impl Fn(&str) -> Result<Vec<u8>, ClipError>,
+    ) -> Vec<(String, Result<Vec<u8>, ClipError>)> {
+        TEXT_MIME_TYPES
+            .iter()
+            .map(|m| ((*m).to_owned(), answer(m)))
+            .collect()
+    }
+
+    #[test]
+    fn kde_empty_answers_are_an_empty_clipboard() {
+        let kept = kde(false, probed(|_| read(""))).expect("restorable");
+        assert_eq!(kept.mime_types(), TEXT_MIME_TYPES);
+    }
+
+    #[test]
+    fn gnome_empty_answers_are_types_the_owner_lacks() {
+        // An image (e.g. a screenshot) copied before murmur's session: every text type reads
+        // as empty. Pasting would replace the image, so don't.
+        let kept = gnome(false, probed(|_| read("")));
+        assert!(matches!(kept, Err(ClipError::Unreadable)), "{kept:?}");
+        // GNOME may also fail some of the parallel reads.
+        let kept = gnome(
+            false,
+            probed(|m| {
+                if m == "text/plain" {
+                    failed()
+                } else {
+                    read("")
+                }
+            }),
+        );
+        assert!(matches!(kept, Err(ClipError::Unreadable)), "{kept:?}");
+    }
+
+    #[test]
+    fn gnome_keeps_only_the_types_the_owner_offers() {
+        // gnome-shell's own copies offer text/plain;charset=utf-8 only.
+        let kept = gnome(
+            false,
+            probed(|m| {
+                if m == TEXT_MIME_TYPES[0] {
+                    read("hello")
+                } else {
+                    read("")
+                }
+            }),
+        )
+        .expect("restorable");
+        assert_eq!(kept.mime_types(), [TEXT_MIME_TYPES[0]]);
+    }
+
+    #[test]
+    fn gnome_errors_are_an_empty_clipboard() {
+        // xdg-desktop-portal-gnome fails every read when nothing is copied.
+        let kept = gnome(false, probed(|_| failed())).expect("restorable");
+        assert!(kept.is_empty());
+    }
+
+    #[test]
+    fn announced_empty_content_is_kept() {
+        // The owner said it offers the type, so no data is its content (both desktops).
+        let reads = || vec![("text/plain".to_owned(), read(""))];
+        assert_eq!(
+            gnome(true, reads()).expect("restorable").mime_types(),
+            ["text/plain"]
+        );
+        assert_eq!(
+            kde(true, reads()).expect("restorable").mime_types(),
+            ["text/plain"]
+        );
+    }
+
     #[test]
     fn text_offer_has_every_text_type() {
         let offer = Offer::text("ą");
@@ -626,7 +748,7 @@ mod tests {
 
     #[test]
     fn snapshot_keeps_what_could_be_read() {
-        let kept = keep_snapshot(
+        let kept = kde(
             true,
             vec![
                 ("text/html".into(), failed()),
@@ -639,23 +761,23 @@ mod tests {
 
     #[test]
     fn announced_but_unreadable_content_is_not_overwritten() {
-        let kept = keep_snapshot(true, vec![("image/png".into(), failed())]);
+        let kept = kde(true, vec![("image/png".into(), failed())]);
         assert!(matches!(kept, Err(ClipError::Unreadable)));
     }
 
     #[test]
     fn unknown_unreadable_content_counts_as_empty() {
-        let kept = keep_snapshot(false, vec![("text/plain".into(), failed())]);
+        let kept = kde(false, vec![("text/plain".into(), failed())]);
         assert!(kept.expect("restorable").is_empty());
         // An announced empty clipboard is empty too.
-        assert!(keep_snapshot(true, vec![]).expect("empty").is_empty());
+        assert!(kde(true, vec![]).expect("empty").is_empty());
     }
 
     #[test]
     fn unanswered_reads_mean_content_that_cant_be_restored() {
         // KDE: an image on the clipboard, murmur doesn't know the owner's types and asks for
         // text, which the portal never answers.
-        let kept = keep_snapshot(
+        let kept = kde(
             false,
             vec![
                 ("text/plain".into(), Err(ClipError::TimedOut)),
@@ -668,7 +790,7 @@ mod tests {
     #[test]
     fn an_announced_type_read_too_late_blocks_the_paste() {
         // The rest would be restored without it.
-        let kept = keep_snapshot(
+        let kept = kde(
             true,
             vec![
                 ("text/plain".into(), read("hello")),
@@ -681,7 +803,7 @@ mod tests {
     #[test]
     fn types_without_an_answer_are_left_out() {
         // A Qt app offers fewer text types than murmur tries.
-        let kept = keep_snapshot(
+        let kept = kde(
             false,
             vec![
                 ("text/plain;charset=utf-8".into(), read("hello")),
@@ -694,7 +816,7 @@ mod tests {
 
     #[test]
     fn too_large_content_is_not_overwritten() {
-        let kept = keep_snapshot(
+        let kept = kde(
             true,
             vec![
                 ("text/plain".into(), read("hello")),
@@ -703,7 +825,7 @@ mod tests {
         );
         assert!(matches!(kept, Err(ClipError::TooLarge)));
         let big = vec![0u8; MAX_TOTAL_BYTES / 2 + 1];
-        let kept = keep_snapshot(
+        let kept = kde(
             true,
             vec![
                 ("image/png".into(), Ok(big.clone())),

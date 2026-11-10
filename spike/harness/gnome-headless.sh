@@ -1,7 +1,7 @@
 #!/bin/bash
 # Headless GNOME (mutter / gnome-shell) harness for EIS keyboard injection tests.
 #
-# Runs entirely on a private D-Bus session bus, a private XDG_RUNTIME_DIR, private HOME/XDG dirs
+# Runs entirely on a private D-Bus session bus and a private system bus, a private XDG_RUNTIME_DIR, private HOME/XDG dirs
 # and GSETTINGS_BACKEND=memory, so nothing reaches the user's real desktop, bus, dconf or audio.
 # Typing goes through mutter's own org.gnome.Mutter.RemoteDesktop API (no portal, no dialog).
 #
@@ -44,6 +44,29 @@ if [ "${1:-}" != "__inner" ]; then
     RT=$(mktemp -d /tmp/murmur-rt.XXXXXX)
     chmod 700 "$RT"
     mkdir -p "$WORK"/{home,config,data,cache,state,dbus-services}
+    # A private system bus too, also without service activation: gnome-shell registers a geoclue
+    # agent at startup, which on the host's system bus D-Bus-activates geoclue (SELinux denials).
+    SYSBUS=$(mktemp -d /tmp/murmur-sysbus.XXXXXX)
+    sed -e "s|<type>session</type>|<type>system</type>|" -e "s|unix:tmpdir=/tmp|unix:path=$SYSBUS/bus|" \
+        -e "s|<servicedir>.*</servicedir>||" -e "s|<auth>EXTERNAL</auth>|<auth>EXTERNAL</auth>|" \
+        >"$WORK/system-bus.conf" <<EOF2
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <type>session</type>
+  <listen>unix:tmpdir=/tmp</listen>
+  <auth>EXTERNAL</auth>
+  <policy context="default">
+    <allow send_destination="*" eavesdrop="true"/>
+    <allow eavesdrop="true"/>
+    <allow own="*"/>
+  </policy>
+</busconfig>
+EOF2
+    dbus-daemon --config-file="$WORK/system-bus.conf" --nofork >/dev/null 2>&1 &
+    SYSBUS_PID=$!
+    for _ in $(seq 50); do [ -S "$SYSBUS/bus" ] && break; sleep 0.1; done
+    [ -S "$SYSBUS/bus" ] || die "private system bus never appeared"
     # Private session bus with NO service activation (no portals, dconf, a11y bus, tracker...).
     cat >"$WORK/bus.conf" <<EOF
 <!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
@@ -63,13 +86,15 @@ if [ "${1:-}" != "__inner" ]; then
 EOF
     export MURMUR_OUTER_BUS=${DBUS_SESSION_BUS_ADDRESS:-none}
     env -u DISPLAY -u WAYLAND_DISPLAY -u DBUS_SESSION_BUS_ADDRESS \
+        DBUS_SYSTEM_BUS_ADDRESS="unix:path=$SYSBUS/bus" \
         HOME="$WORK/home" XDG_CONFIG_HOME="$WORK/config" XDG_DATA_HOME="$WORK/data" \
         XDG_CACHE_HOME="$WORK/cache" XDG_STATE_HOME="$WORK/state" XDG_RUNTIME_DIR="$RT" \
         GSETTINGS_BACKEND=memory PULSE_SERVER=unix:/nonexistent PIPEWIRE_REMOTE=murmur-none \
         GTK_USE_PORTAL=0 MURMUR_WORK="$WORK" SPIKE="$SPIKE" COMPOSITOR="$COMPOSITOR" \
         dbus-run-session --config-file="$WORK/bus.conf" -- "$0" __inner "$@"
     rc=$?
-    rm -rf "$RT"
+    kill "$SYSBUS_PID" 2>/dev/null
+    rm -rf "$RT" "$SYSBUS"
     if [ "${KEEP:-0}" = 1 ]; then echo "harness: work dir kept: $WORK"; else rm -rf "$WORK"; fi
     exit $rc
 fi
@@ -89,6 +114,8 @@ assert_isolated() {
     [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ] || die "SAFETY: no private bus"
     [ "$DBUS_SESSION_BUS_ADDRESS" != "$MURMUR_OUTER_BUS" ] || die "SAFETY: bus is the outer bus"
     case "$XDG_RUNTIME_DIR" in /run/user/*) die "SAFETY: XDG_RUNTIME_DIR is the real one";; esac
+    case "${DBUS_SYSTEM_BUS_ADDRESS:-}" in unix:path=/tmp/murmur-sysbus.*) ;;
+        *) die "SAFETY: DBUS_SYSTEM_BUS_ADDRESS is not the private system bus";; esac
 }
 
 # Layout config for gnome-shell: compile a private schema dir with an input-sources override.
