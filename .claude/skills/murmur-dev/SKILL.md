@@ -25,6 +25,17 @@ $T bash -lc 'cd spike && cargo run -- <args>'   # stage-0 spike
 - Long builds (sherpa-onnx, Slint, a cold `cargo build`) go in the background
   (`run_in_background: true`). Wait for the notification instead of polling.
 
+## Host app ID (toolbox runs) and cleanup
+
+- Portals need the app ID's desktop entry. Use the **installed Flatpak's exported entry**
+  (`~/.local/share/flatpak/exports/share/applications/io.github.gabus.Murmur.desktop`). Never
+  put an `io.github.gabus.Murmur.desktop` in `~/.local/share/applications`: it shadows the
+  Flatpak's, and the maintainer's menu/Discover then runs that file's `Exec` (once `Exec=true`,
+  so clicking murmur did nothing).
+- After any Flatpak smoke test, run `flatpak kill io.github.gabus.Murmur`. Killing `flatpak run`
+  leaves the sandboxed murmur alive (several leaked, about 1 GB of RAM each). Also kill the test's
+  private dbus-daemon and nested KWin, and check with `pgrep -fa murmur`.
+
 ## Dev model cache
 
 Real runs read models from `$XDG_DATA_HOME/murmur/models` (README → Models). For tests and

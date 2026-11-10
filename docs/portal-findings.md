@@ -10,9 +10,11 @@ sections.
 - Host apps must register an app ID before any portal call. If they don't, `CreateSession`
   fails with `NotAllowed: An app id is required`.
 - `org.freedesktop.host.portal.Registry.Register` (`ashpd::register_host_app`) works only if
-  `io.github.gabus.Murmur.desktop` is installed, otherwise: `App info not found`. For
-  development, a hidden (`NoDisplay=true`) entry lives in
-  `~/.local/share/applications/io.github.gabus.Murmur.desktop`.
+  `io.github.gabus.Murmur.desktop` is installed, otherwise: `App info not found`. The
+  installed Flatpak's exported entry satisfies this for toolbox runs too. **Don't** add a dev
+  entry to `~/.local/share/applications`: it shadows the Flatpak's, so the app menu and
+  Discover launch the dev entry instead. An early `Exec=true` dev entry made "Launch" do
+  nothing until it was removed (2026-11-10).
 
 ## GlobalShortcuts (portal v2)
 
