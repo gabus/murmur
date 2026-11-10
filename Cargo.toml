@@ -13,7 +13,8 @@ cpal = { version = "0.18", features = ["pulseaudio"] }
 futures-util = "0.3.34"
 reis = { version = "0.7", features = ["tokio"] }
 rustix = { version = "1", features = ["time"] }
-sherpa-onnx = "2.0.1"
+# Native libs come from the `sherpa-static` / `sherpa-shared` features below.
+sherpa-onnx = { version = "2.0.1", default-features = false }
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "net", "fs", "io-util", "process"] }
 tracing = "0.1"
@@ -38,5 +39,12 @@ hound = "3"
 png = "0.18"
 
 [features]
+default = ["sherpa-static"]
+# sherpa-onnx native libs (enable exactly one):
+# - sherpa-static: its prebuilt static libs, downloaded by sherpa-onnx-sys at build time (dev builds).
+# - sherpa-shared: an installed libsherpa-onnx-c-api.so + libonnxruntime.so from
+#   SHERPA_ONNX_LIB_DIR, no download (the Flatpak builds both from source).
+sherpa-static = ["sherpa-onnx/static"]
+sherpa-shared = ["sherpa-onnx/shared"]
 # Test-only hooks: WAV instead of mic, direct KWin EIS, autorun. Never shipped.
 dev-harness = ["dep:hound"]
