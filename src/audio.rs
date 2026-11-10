@@ -101,7 +101,13 @@ pub struct Capture {
 impl Capture {
     /// Opens the default input device and starts streaming to `sink`.
     /// Blocks until the stream runs (cpal's `play` waits for the first buffer).
-    pub fn start(sink: Sink, on_error: OnError, level: Level) -> Result<Self, AudioError> {
+    pub fn start(
+        device: &str,
+        sink: Sink,
+        on_error: OnError,
+        level: Level,
+    ) -> Result<Self, AudioError> {
+        let device = device.to_owned();
         let (ready_tx, ready_rx) = mpsc::channel::<Result<(), AudioError>>();
         let (stop_tx, stop_rx) = mpsc::channel::<()>();
         let thread = std::thread::Builder::new()
@@ -112,7 +118,7 @@ impl Capture {
                     crate::dev::play_file(path.into(), sink, on_error, level, ready_tx, stop_rx);
                     return;
                 }
-                let stream = match open(sink, on_error, level) {
+                let stream = match open(&device, sink, on_error, level) {
                     Ok(s) => s,
                     Err(e) => {
                         let _ = ready_tx.send(Err(e));
@@ -168,9 +174,61 @@ struct Shared {
     level: Level,
 }
 
-fn open(sink: Sink, on_error: OnError, level: Level) -> Result<cpal::Stream, AudioError> {
-    let host = cpal::default_host();
-    let device = host.default_input_device().ok_or(AudioError::NoDevice)?;
+/// PulseAudio (lists real microphones by name), else whatever cpal defaults to.
+/// Logs why PulseAudio isn't used, once.
+fn host() -> cpal::Host {
+    static REPORTED: std::sync::Once = std::sync::Once::new();
+    match cpal::host_from_id(cpal::HostId::PulseAudio) {
+        Ok(h) => h,
+        Err(e) => {
+            REPORTED.call_once(
+                || warn!(error = %e, "PulseAudio unavailable, using the default audio host"),
+            );
+            cpal::default_host()
+        }
+    }
+}
+
+/// Names of the available microphones (blocking; call off the async runtime).
+pub fn microphones() -> Vec<String> {
+    let host = host();
+    let Ok(devices) = host.input_devices() else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = devices
+        .filter_map(|d| d.description().ok().map(|n| n.name().to_owned()))
+        // PulseAudio lists every output's monitor as an input; that's not a mic.
+        .filter(|n| !n.starts_with("Monitor of "))
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn pick_device(host: &cpal::Host, name: &str) -> Option<cpal::Device> {
+    if !name.is_empty()
+        && let Ok(mut devices) = host.input_devices()
+        && let Some(d) = devices.find(|d| d.description().is_ok_and(|n| n.name() == name))
+    {
+        return Some(d);
+    }
+    if !name.is_empty() {
+        warn!(
+            device = name,
+            "selected microphone not found, using the default"
+        );
+    }
+    host.default_input_device()
+}
+
+fn open(
+    name: &str,
+    sink: Sink,
+    on_error: OnError,
+    level: Level,
+) -> Result<cpal::Stream, AudioError> {
+    let host = host();
+    let device = pick_device(&host, name).ok_or(AudioError::NoDevice)?;
     let name = device
         .description()
         .map(|d| d.to_string())

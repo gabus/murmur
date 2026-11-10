@@ -131,6 +131,20 @@ the EIS fd with no dialog. libei 1.6.0.
 - **Not tested against a real portal:** the session `Closed` signal handling, and reading the
   portal version on errors.
 
+## Clipboard paste fallback (D-011/D-012), **untested against a real portal**
+
+- `RequestClipboard` goes between `SelectDevices` and `Start`. It's used only if
+  `is_clipboard_enabled()`. KDE 6.7.5's `kde.portal` lists the Clipboard interface.
+- Unit-tested with a fake clipboard and a fake EIS server: paste, then restore; not read in
+  time; can't save the clipboard (no keys pressed); clipboard-manager reads ignored; paste
+  shortcut on us/dvorak/ru.
+- Open questions for a real-session check:
+  - Do existing restore tokens (granted without clipboard) re-prompt or silently omit it?
+  - Is `SelectionOwnerChanged` sent right after `Start`?
+  - Pipe fd types.
+  - Ctrl+V with Caps Lock or a non-Latin layout.
+  - Timing margins (50 ms / 1.5 s).
+
 ## Automated testing without the user's desktop
 
 `kwin_wayland --virtual --socket murmur-test-0` inside `dbus-run-session` starts an invisible

@@ -19,7 +19,6 @@ Goal: prove the two uncertain pieces before writing the real app.
 - [x] Wrap the spike in a minimal Flatpak manifest and confirm both portals work sandboxed
 - [x] Test on KDE Plasma 6 (primary ✅) and GNOME 48+ (headless mutter/gnome-shell 50.6 ✅; portal dialog + restore token on GNOME still untested → VM)
 - [x] Spike EIS typing (ConnectToEIS + reis + keymap-aware keycodes): works on KDE and GNOME; the apparent stall was a reis lost-wakeup bug
-- [ ] Investigate cpal PulseAudio host failing inside Flatpak (ALSA fallback works)
 - [x] Write findings in `docs/portal-findings.md`, then go / no-go on the typing approach (go: EIS, D-005)
 
 ## Stage 1: Core dictation (CLI)
@@ -64,15 +63,18 @@ Goal: `murmur` daemon, hotkey toggles listening, phrases get typed.
 
 ## Stage 4: Polish
 
-- [ ] Config file `$XDG_CONFIG_HOME/murmur/config.toml` (model, silence timeout, idle unload, spacing, audio source)
-- [ ] First-run setup window: shortcut → typing permission → model download (one time only)
+- [x] Config file `$XDG_CONFIG_HOME/murmur/config.toml` (model, pause, idle unload, microphone, autostart, paste keys; spacing is fixed by D-002)
+- [ ] First-run setup window: shortcut → typing permission → model download (one time only) (daemon side done; Slint UI in progress)
+- [ ] Settings window (D-010)
+- [ ] Verify the paste fallback against the real Clipboard portal (KDE, then GNOME)
+- [ ] Investigate cpal PulseAudio host failing inside the Flatpak (now logged)
 - [x] Left-click tray icon toggles listening; right-click opens menu
-- [ ] Optional audio source picker
-- [ ] Clipboard + paste fallback for characters that keysym typing can't produce
-- [ ] Autostart via Background portal (opt-in)
-- [ ] Single-instance guard
-- [ ] Graceful handling of portal denial and session loss
-- [ ] Basic punctuation/capitalization handling (model-dependent)
+- [x] Optional audio source picker (config + Settings window)
+- [x] Clipboard + paste fallback for characters the active layout can't produce (D-011/D-012; real-portal check pending)
+- [x] Autostart via Background portal (opt-in)
+- [x] Single-instance guard (D-Bus name; a second start opens Settings; `Toggle` exposed on D-Bus)
+- [x] Graceful handling of portal denial and session loss
+- [x] Basic punctuation/capitalization handling (model-dependent; light engine adds final punctuation at pauses)
 
 ## Stage 5: Packaging
 

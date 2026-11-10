@@ -104,6 +104,8 @@ pub struct DownloadRow {
 }
 
 /// Daemon → UI.
+// Sent a few times per second at most; boxing the state isn't worth the noise.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum ToUi {

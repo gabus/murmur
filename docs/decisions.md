@@ -102,3 +102,14 @@ restored.**
 - Why: it works for any character. The trade-off the maintainer accepted is that a clipboard
   manager may record the word.
 - Spec: README → Output.
+
+### D-012 · 2026-11-10 · Claude (implementation of D-011; maintainer informed)
+**Pasting covers a whole word, and the paste shortcut is the one place murmur presses Ctrl.**
+- Why: a paste is read asynchronously by the app, so keys typed right after it could overtake
+  it. One paste per word also means one clipboard round trip.
+- The clipboard is saved first, and if it can't be saved and restored safely (too large,
+  unreadable), murmur doesn't paste: the word is typed without the missing characters, plus
+  an `Unmapped` notice.
+- Shortcut: Ctrl+V, or Ctrl+Shift+V via `paste_keys`. Ctrl is pressed only after the
+  held-modifier check passes, and released in the same burst.
+- Not yet verified against a real Clipboard portal (KDE/GNOME); see `docs/portal-findings.md`.

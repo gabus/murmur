@@ -248,6 +248,15 @@ impl ksni::Tray for MurmurTray {
                 ..Default::default()
             }
             .into(),
+            StandardItem {
+                label: "Settings…".into(),
+                icon_name: "configure".into(),
+                activate: Box::new(|t: &mut Self| {
+                    let _ = t.commands.send(Command::OpenSettings);
+                }),
+                ..Default::default()
+            }
+            .into(),
             ksni::MenuItem::Separator,
             StandardItem {
                 label: "Quit".into(),
@@ -275,8 +284,9 @@ pub async fn run(
     mut level: watch::Receiver<u8>,
     mut models: watch::Receiver<ModelsView>,
     commands: mpsc::UnboundedSender<Command>,
-    shortcut: Option<String>,
+    mut shortcut_rx: watch::Receiver<Option<String>>,
 ) {
+    let shortcut = shortcut_rx.borrow_and_update().clone();
     let mut tray = MurmurTray {
         shown: Shown::Idle,
         models: models.borrow_and_update().clone(),
@@ -342,6 +352,13 @@ pub async fn run(
                         }
                     })
                     .await;
+            }
+            changed = shortcut_rx.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                let s = shortcut_rx.borrow_and_update().clone();
+                handle.update(|t| t.shortcut = s).await;
             }
             changed = models.changed() => {
                 if changed.is_err() {

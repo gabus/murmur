@@ -15,6 +15,17 @@ pub struct Config {
     pub model: String,
     /// Unload the model after this many idle minutes (0 = never).
     pub idle_unload_minutes: u32,
+    /// The first-run setup page has been completed.
+    pub setup_done: bool,
+    /// Microphone name ("" = system default).
+    pub microphone: String,
+    /// Pause (seconds) after which a sentence is finished.
+    pub pause_secs: f32,
+    /// Start murmur at login (requested through the Background portal).
+    pub autostart: bool,
+    /// Keys used to paste characters missing from the layout:
+    /// "ctrl+v" (default) or "ctrl+shift+v" (terminals).
+    pub paste_keys: String,
 }
 
 impl Default for Config {
@@ -22,6 +33,11 @@ impl Default for Config {
         Self {
             model: models::DEFAULT_MODEL.to_owned(),
             idle_unload_minutes: 10,
+            setup_done: false,
+            microphone: String::new(),
+            pause_secs: 0.8,
+            autostart: false,
+            paste_keys: "ctrl+v".into(),
         }
     }
 }
@@ -69,6 +85,11 @@ mod tests {
         let c = Config {
             model: "moonshine-tiny-en".into(),
             idle_unload_minutes: 3,
+            setup_done: true,
+            microphone: "USB mic".into(),
+            pause_secs: 1.2,
+            autostart: true,
+            paste_keys: "ctrl+shift+v".into(),
         };
         c.save_to(&path).expect("save");
         assert_eq!(Config::load_from(&path), c);

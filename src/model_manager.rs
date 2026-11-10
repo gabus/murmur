@@ -75,6 +75,7 @@ impl ModelManager {
         });
         let template = LoadSpec {
             model: active,
+            min_silence: config.pause_secs.clamp(0.3, 3.0),
             ..template
         };
         let (view, view_rx) = watch::channel(ModelsView {
@@ -96,6 +97,27 @@ impl ModelManager {
 
     pub fn config(&self) -> &Config {
         &self.config
+    }
+
+    /// Changes and saves the config. A new pause length needs the engine
+    /// reloaded, which is returned as `Outcome::Switch`.
+    pub fn update_config(&mut self, change: impl FnOnce(&mut Config)) -> Outcome {
+        change(&mut self.config);
+        self.save_config();
+        let pause = self.config.pause_secs.clamp(0.3, 3.0);
+        if (pause - self.template.min_silence).abs() > f32::EPSILON {
+            self.template.min_silence = pause;
+            return Outcome::Switch(self.template.clone());
+        }
+        Outcome::None
+    }
+
+    fn save_config(&self) {
+        if let Some(p) = &self.config_path
+            && let Err(e) = self.config.save_to(p)
+        {
+            warn!(error = %e, "could not save config");
+        }
     }
 
     pub fn active(&self) -> &'static ModelInfo {
@@ -233,11 +255,7 @@ impl ModelManager {
         }
         self.template.model = model;
         self.config.model = model.id.to_owned();
-        if let Some(p) = &self.config_path
-            && let Err(e) = self.config.save_to(p)
-        {
-            warn!(error = %e, "could not save config");
-        }
+        self.save_config();
         info!(model = model.id, "model selected");
         self.refresh();
         Outcome::Switch(self.template.clone())

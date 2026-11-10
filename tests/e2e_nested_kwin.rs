@@ -74,6 +74,10 @@ async fn dictation_end_to_end() {
             .any(|(k, v)| k == "DBUS_SESSION_BUS_ADDRESS" && *v == nested.bus),
         "daemon must only see the nested bus"
     );
+    // Setup is done in this profile, so no setup window steals the pad's focus.
+    let cfg_dir = nested.dir.join("config/murmur");
+    std::fs::create_dir_all(&cfg_dir).expect("config dir");
+    std::fs::write(cfg_dir.join("config.toml"), "setup_done = true\n").expect("config");
     let log = std::fs::File::create(nested.dir.join("murmur.log")).expect("log file");
     let mut daemon = Command::new(env!("CARGO_BIN_EXE_murmur"))
         .env_clear()
@@ -213,6 +217,10 @@ async fn dictation_via_tray_icon() {
     let prefix = pad.settle(Duration::from_millis(300)).await;
     assert!(!prefix.is_empty(), "test pad never got focus");
 
+    // Setup is done in this profile, so no setup window steals the pad's focus.
+    let cfg_dir = nested.dir.join("config/murmur");
+    std::fs::create_dir_all(&cfg_dir).expect("config dir");
+    std::fs::write(cfg_dir.join("config.toml"), "setup_done = true\n").expect("config");
     let log = std::fs::File::create(nested.dir.join("murmur.log")).expect("log file");
     let mut daemon = Command::new(env!("CARGO_BIN_EXE_murmur"))
         .env_clear()
