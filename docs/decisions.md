@@ -81,3 +81,24 @@ lock). Caps Lock is planned for, not waited on.
   (CC-BY-SA community tier, placeholder metadata). Kept as an open question until licensing
   (D-003).
 - Spec: README → Supported models.
+
+### D-009 · 2026-11-10 · maintainer
+**First-run setup is a single page**: Shortcut (with Change), Typing permission (Allow…),
+Speech model (download progress, Choose another model), and a "Start murmur when I log in"
+checkbox, then Done.
+- Why: the model download runs while the user handles the two system dialogs, so setup
+  finishes sooner.
+- Spec: README → First run.
+
+### D-010 · 2026-11-10 · maintainer
+**Tray → Settings… opens a small window**: Shortcut (Change…), Microphone, Model, the pause
+that ends a sentence, free memory after N idle minutes, and start at login. Same look as the
+setup window.
+- Spec: README → First run / Functional requirements.
+
+### D-011 · 2026-11-10 · maintainer
+**Characters missing from the active layout are pasted, then the previous clipboard is
+restored.**
+- Why: it works for any character. The trade-off the maintainer accepted is that a clipboard
+  manager may record the word.
+- Spec: README → Output.

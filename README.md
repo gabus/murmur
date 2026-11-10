@@ -47,15 +47,18 @@ and in between it stays out of the way.
 
 #### First run
 
-A one-time setup window:
+A one-time setup window, all on one page ([D-009](docs/decisions.md)):
 
-1. **Shortcut.** Portal dialog where the user picks a key (e.g. `Meta+H`).
-2. **Typing permission.** RemoteDesktop portal dialog, remembered so it is never
-   asked again.
-3. **Model.** The default model downloads with a progress bar, with an option to
-   pick another.
+1. **Shortcut.** Portal dialog where the user picks a key (e.g. `Meta+H`), with a Change button.
+2. **Typing permission.** An "Allow…" button opens the RemoteDesktop portal dialog. The
+   permission is remembered, so it is never asked again.
+3. **Model.** The default model starts downloading as soon as the window opens, with a
+   progress bar and an option to pick another.
+4. **Start at login** checkbox (off by default).
 
-After setup the window closes, and murmur lives only in the tray.
+After setup the window closes, and murmur lives only in the tray. **Settings…** in the tray
+menu opens a small window with the same look: shortcut, microphone, model, the pause that ends
+a sentence, idle unload time and start at login ([D-010](docs/decisions.md)).
 
 #### Dictating
 
@@ -111,7 +114,8 @@ works in every app, but it can't be fully seamless:
 - **Collision.** Each word is sent as one burst (under 1 ms), so the user's own keystrokes can
   land between murmur's words but not inside them.
 - **Layout.** Characters that aren't on the active keyboard layout (e.g. `ą` while on *US*)
-  go through the clipboard fallback.
+  are pasted through the clipboard, which is restored afterwards. A clipboard manager may
+  still record them.
 - **Held modifiers.** If Ctrl/Alt/Super were physically held while murmur typed,
   the letters would act as shortcuts (and Shift would change their case). murmur sees held,
   latched and locked modifiers through EIS and waits until they are released before typing.
@@ -134,7 +138,7 @@ surrounding text are known, and live text can be shown underlined in the field
 | Audio | Capture the default PipeWire/Pulse source at 16 kHz mono. The stream is open **only while listening**. Optional source picker. |
 | VAD | Silero VAD for end-of-phrase detection only. Never stops listening. |
 | ASR | sherpa-onnx. Default: offline model re-run every ~0.5 s on the current sentence, committing words two runs agree on. Light: streaming transducer, greedy decoding, plus a punctuation/casing step. |
-| Output | Type text through the `org.freedesktop.portal.RemoteDesktop` portal's EIS channel (`ConnectToEIS`, libei): key events resolved through the compositor's XKB keymap and active layout, with murmur pressing Shift/AltGr itself ([D-005](docs/decisions.md)). Words wait while held, latched or locked modifiers could change what's typed ([D-007](docs/decisions.md)); after ~2 s the tray shows *Waiting*. If typing is denied, murmur asks again only on the next dictation. Fallback for characters missing from the active layout: clipboard + paste. Every typed word is followed by one space ([D-002](docs/decisions.md)). |
+| Output | Type text through the `org.freedesktop.portal.RemoteDesktop` portal's EIS channel (`ConnectToEIS`, libei): key events resolved through the compositor's XKB keymap and active layout, with murmur pressing Shift/AltGr itself ([D-005](docs/decisions.md)). Words wait while held, latched or locked modifiers could change what's typed ([D-007](docs/decisions.md)); after ~2 s the tray shows *Waiting*. If typing is denied, murmur asks again only on the next dictation. Characters missing from the active layout are pasted through the clipboard, then the previous clipboard content is restored ([D-011](docs/decisions.md)). Every typed word is followed by one space ([D-002](docs/decisions.md)). |
 | Indicator | StatusNotifierItem tray icon with idle / loading / listening / error states. While listening, the icon reacts to mic level. The menu has start/stop, model picker, settings and quit. |
 | Models | Download on demand into `$XDG_DATA_HOME/murmur/models` with checksum verification. Show size before download. Delete from menu. |
 | Resources | Idle: no audio stream, no model in memory, ~0% CPU. Unload the model after configurable idle time (default 10 min). |
