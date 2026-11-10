@@ -36,7 +36,7 @@ Goal: `murmur` daemon, hotkey toggles listening, phrases get typed.
 - [x] Output: type each committed word through the RemoteDesktop portal, with spacing (EIS, D-005/D-006; nested-KWin tests)
 - [x] Measure: lag from spoken word to typed word, CPU while speaking, Parakeet run time per buffer length (`docs/benchmarks.md`)
 - [x] End-to-end check of the daemon (WAV → engine → typed text) in a nested KWin (`tests/e2e_nested_kwin.rs`)
-- [ ] Verify the daemon inside the Flatpak (startup, portals, mic; dictation once the tray can toggle it)
+- [x] Verify the daemon inside the Flatpak: real session → shortcut bound + EIS typing ready via restore token (no dialogs); private bus → tray toggle, mic (ALSA), model load and transcription in the sandbox
 - [x] State machine: `Idle → Listening(+Loading) → Idle`, toggled by the shortcut only, never by silence
 - [x] Ring-buffer audio from key press so speech during model load isn't lost (worker channel buffers everything from Begin)
 - [x] On stop: flush the phrase in progress (transcribe + insert), then close the mic (250 ms tail)
@@ -44,11 +44,11 @@ Goal: `murmur` daemon, hotkey toggles listening, phrases get typed.
 
 ## Stage 2: Tray
 
-- [ ] `ksni` tray icon with states: idle, loading, listening, error
-- [ ] Icons (symbolic SVG, light/dark friendly)
-- [ ] Menu: Start/Stop, Model ▸, Settings, Quit
-- [ ] Listening icon reacts to mic level (a few pre-rendered levels; update at most ~10×/s)
-- [ ] Notification on errors (mic missing, portal denied, model missing)
+- [x] `ksni` tray icon with states: idle, loading, listening, error
+- [x] Icons (light/dark friendly): idle = the theme's `audio-input-microphone-symbolic`; other states are pixmaps drawn in code (`src/icons.rs`), because the host panel can't read icon files inside the Flatpak
+- [x] Menu: Start/Stop, Quit (Model ▸ arrives with stage 3, Settings with stage 4)
+- [x] Listening icon reacts to mic level (a few pre-rendered levels; update at most ~10×/s)
+- [x] Notification on errors (mic missing, portal denied, model missing) via the Notification portal
 
 ## Stage 3: Models
 
@@ -66,7 +66,7 @@ Goal: `murmur` daemon, hotkey toggles listening, phrases get typed.
 
 - [ ] Config file `$XDG_CONFIG_HOME/murmur/config.toml` (model, silence timeout, idle unload, spacing, audio source)
 - [ ] First-run setup window: shortcut → typing permission → model download (one time only)
-- [ ] Left-click tray icon toggles listening; right-click opens menu
+- [x] Left-click tray icon toggles listening; right-click opens menu
 - [ ] Optional audio source picker
 - [ ] Clipboard + paste fallback for characters that keysym typing can't produce
 - [ ] Autostart via Background portal (opt-in)
