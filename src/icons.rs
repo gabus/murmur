@@ -1,8 +1,9 @@
-//! Tray icon pixmaps, drawn from signed-distance shapes (no image assets needed).
+//! Tray icon pixmaps: the Murmur "Wave M" mark (docs/icon-options/2-wave-m), drawn
+//! from its curve so no image assets are needed.
 //!
-//! The panel runs outside the Flatpak and can't read icon files inside it, so
-//! state icons are sent as ARGB32 pixmaps. Idle uses the desktop's own symbolic
-//! icon instead, so it matches the panel theme.
+//! The panel runs outside the Flatpak and can't read files inside it, so state icons
+//! are sent as ARGB32 pixmaps. Idle uses the exported symbolic icon by name (the panel
+//! recolours it to match its theme); the idle pixmap is only a fallback.
 
 /// Icon sizes offered to the panel (it picks the best fit, incl. HiDPI).
 pub const SIZES: [u32; 3] = [22, 32, 48];
@@ -11,11 +12,13 @@ pub const LEVELS: u8 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Look {
-    /// Red mic; `level` 0..LEVELS fills the capsule from the bottom.
+    /// Neutral grey mark (fallback when the panel can't find the named icon).
+    Idle,
+    /// Red mark; the wave gets taller with the voice `level` (0..LEVELS).
     Listening { level: u8 },
-    /// Grey mic at reduced opacity; `phase` 0..4 animates a pulse.
+    /// Grey mark at reduced opacity; `phase` 0..4 animates a pulse.
     Loading { phase: u8 },
-    /// Grey mic with an amber warning badge.
+    /// Grey mark with an amber warning badge.
     Error,
 }
 
@@ -30,29 +33,61 @@ pub struct Pixmap {
 #[derive(Clone, Copy)]
 struct Rgba(f32, f32, f32, f32);
 
-const RED: Rgba = Rgba(0.87, 0.18, 0.18, 1.0);
-const RED_DIM: Rgba = Rgba(0.87, 0.18, 0.18, 0.45);
-const GREY: Rgba = Rgba(0.55, 0.57, 0.6, 1.0);
+const RED: Rgba = Rgba(0.85, 0.27, 0.33, 1.0);
+const GREY: Rgba = Rgba(0.6, 0.62, 0.64, 1.0);
 const AMBER: Rgba = Rgba(0.96, 0.64, 0.0, 1.0);
 const DARK: Rgba = Rgba(0.1, 0.1, 0.1, 1.0);
 
-/// Signed distance from `p` to a vertical capsule (centre x, from y0 to y1, radius r).
-fn capsule(px: f32, py: f32, x: f32, y0: f32, y1: f32, r: f32) -> f32 {
-    let cy = py.clamp(y0, y1);
-    ((px - x).powi(2) + (py - cy).powi(2)).sqrt() - r
+/// The Wave M in a 24-unit design grid: the same curve as the SVG (16-unit grid × 1.5).
+const WAVE_M: [[(f32, f32); 4]; 4] = [
+    [(2.4, 18.3), (4.5, 18.3), (5.1, 5.7), (7.5, 5.7)],
+    [(7.5, 5.7), (9.75, 5.7), (10.5, 15.3), (12.0, 15.3)],
+    [(12.0, 15.3), (13.5, 15.3), (14.25, 5.7), (16.5, 5.7)],
+    [(16.5, 5.7), (18.9, 5.7), (19.5, 18.3), (21.6, 18.3)],
+];
+const STROKE_HALF: f32 = 1.3;
+const CENTER_Y: f32 = 12.0;
+
+/// The curve as a polyline, with its height scaled by `k` around the centre line.
+fn wave_points(k: f32) -> Vec<(f32, f32)> {
+    const STEPS: usize = 16;
+    let mut pts = Vec::with_capacity(WAVE_M.len() * STEPS + 1);
+    for (i, [p0, p1, p2, p3]) in WAVE_M.iter().enumerate() {
+        for s in 0..=STEPS {
+            if i > 0 && s == 0 {
+                continue;
+            }
+            let t = s as f32 / STEPS as f32;
+            let u = 1.0 - t;
+            let x = u * u * u * p0.0
+                + 3.0 * u * u * t * p1.0
+                + 3.0 * u * t * t * p2.0
+                + t * t * t * p3.0;
+            let y = u * u * u * p0.1
+                + 3.0 * u * u * t * p1.1
+                + 3.0 * u * t * t * p2.1
+                + t * t * t * p3.1;
+            pts.push((x, CENTER_Y + (y - CENTER_Y) * k));
+        }
+    }
+    pts
 }
 
-/// Distance to the lower half of a ring (the mic holder "U").
-fn holder(px: f32, py: f32, cx: f32, cy: f32, r: f32, w: f32) -> f32 {
-    if py < cy {
-        // straight sides above the centre
-        let dx = (px - cx).abs() - r;
-        let dy = (cy - py) - r * 0.15;
-        let side = dx.abs() - w;
-        return side.max(dy);
-    }
-    let d = ((px - cx).powi(2) + (py - cy).powi(2)).sqrt();
-    (d - r).abs() - w
+/// Distance from `p` to the polyline.
+fn dist_polyline(px: f32, py: f32, pts: &[(f32, f32)]) -> f32 {
+    pts.windows(2)
+        .map(|w| {
+            let ((ax, ay), (bx, by)) = (w[0], w[1]);
+            let (dx, dy) = (bx - ax, by - ay);
+            let len2 = dx * dx + dy * dy;
+            let t = if len2 > 0.0 {
+                (((px - ax) * dx + (py - ay) * dy) / len2).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            ((px - ax - t * dx).powi(2) + (py - ay - t * dy).powi(2)).sqrt()
+        })
+        .fold(f32::INFINITY, f32::min)
 }
 
 fn rect(px: f32, py: f32, x0: f32, y0: f32, x1: f32, y1: f32) -> f32 {
@@ -84,54 +119,34 @@ fn blend(dst: &mut Rgba, src: Rgba, a: f32) {
 
 /// Renders one icon at `size`×`size`.
 pub fn render(look: Look, size: u32) -> Pixmap {
-    let s = size as f32;
-    let u = s / 24.0; // design grid: 24×24
-    let (body, fill_color, fill_frac) = match look {
-        Look::Listening { level } => (
-            RED_DIM,
-            RED,
-            f32::from(level.min(LEVELS - 1) + 1) / f32::from(LEVELS),
-        ),
+    let u = size as f32 / 24.0; // pixels per design unit
+    let (color, k) = match look {
+        Look::Idle | Look::Error => (GREY, 1.0),
+        Look::Listening { level } => {
+            // Quiet: a flat wave; loud: the full M.
+            let l = f32::from(level.min(LEVELS - 1)) / f32::from(LEVELS - 1);
+            (RED, 0.45 + 0.55 * l)
+        }
         Look::Loading { phase } => {
             let a = 0.45 + 0.15 * f32::from(phase % 4);
-            (Rgba(GREY.0, GREY.1, GREY.2, a), GREY, 0.0)
+            (Rgba(GREY.0, GREY.1, GREY.2, a), 1.0)
         }
-        Look::Error => (GREY, GREY, 0.0),
     };
-    let stroke = match look {
-        Look::Listening { .. } => RED,
-        Look::Loading { phase } => Rgba(GREY.0, GREY.1, GREY.2, 0.45 + 0.15 * f32::from(phase % 4)),
-        Look::Error => GREY,
-    };
+    let pts = wave_points(k);
     let mut data = Vec::with_capacity((size * size * 4) as usize);
     for y in 0..size {
         for x in 0..size {
-            // sample at pixel centre, in design units
             let (px, py) = ((x as f32 + 0.5) / u, (y as f32 + 0.5) / u);
-            let px_per_unit = 1.0 / u;
             let mut c = Rgba(0.0, 0.0, 0.0, 0.0);
-            // capsule body (x 12, y 4.5..10.5, r 3.5)
-            let d_body = capsule(px, py, 12.0, 5.5, 10.5, 3.5);
-            blend(&mut c, body, cover(d_body / px_per_unit));
-            // level fill: lower part of the capsule
-            if fill_frac > 0.0 {
-                let top = 2.0 + (14.0 - 2.0) * (1.0 - fill_frac);
-                let d_fill = d_body.max(top - py);
-                blend(&mut c, fill_color, cover(d_fill / px_per_unit));
-            }
-            // holder, stem and base
-            let d_holder = holder(px, py, 12.0, 10.5, 6.0, 0.9);
-            let d_stem = rect(px, py, 11.1, 16.5, 12.9, 20.0);
-            let d_base = rect(px, py, 8.0, 19.6, 16.0, 21.2);
-            let d = d_holder.min(d_stem).min(d_base);
-            blend(&mut c, stroke, cover(d / px_per_unit));
+            let d = dist_polyline(px, py, &pts) - STROKE_HALF;
+            blend(&mut c, color, cover(d * u));
             if look == Look::Error {
                 // amber badge with a dark "!" in the lower-right corner
                 let d_badge = ((px - 18.5).powi(2) + (py - 17.5).powi(2)).sqrt() - 5.0;
-                blend(&mut c, AMBER, cover(d_badge / px_per_unit));
+                blend(&mut c, AMBER, cover(d_badge * u));
                 let d_bar = rect(px, py, 17.8, 14.3, 19.2, 18.3);
                 let d_dot = rect(px, py, 17.8, 19.3, 19.2, 20.6);
-                blend(&mut c, DARK, cover(d_bar.min(d_dot) / px_per_unit));
+                blend(&mut c, DARK, cover(d_bar.min(d_dot) * u));
             }
             let to8 = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
             data.extend_from_slice(&[to8(c.3), to8(c.0), to8(c.1), to8(c.2)]);
@@ -180,10 +195,18 @@ mod tests {
     }
 
     #[test]
-    fn higher_level_shows_more_solid_red() {
+    fn louder_voice_draws_a_taller_wave() {
         let lo = red_sum(&render(Look::Listening { level: 0 }, 48));
         let hi = red_sum(&render(Look::Listening { level: LEVELS - 1 }, 48));
         assert!(hi > lo, "{hi} <= {lo}");
+    }
+
+    #[test]
+    fn the_wave_is_centred_and_inside_the_icon() {
+        let p = render(Look::Idle, 48);
+        let row_has_ink = |y: usize| (0..48).any(|x| p.data[(y * 48 + x) * 4] > 0);
+        assert!(!row_has_ink(0) && !row_has_ink(47), "touches the edge");
+        assert!(row_has_ink(24), "nothing across the middle");
     }
 
     #[test]

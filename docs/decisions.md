@@ -159,4 +159,8 @@ and the README title.
 - The command (`murmur`), app ID (`io.github.gabus.Murmur`), paths and logs are unchanged.
 - The tray and app icons are being replaced by a distinct brand mark (the current tray icon
   looks like a microphone-settings applet). Options are in `docs/icon-options/`; the
-  maintainer picks one.
+  maintainer chose **option 2, "Wave M"** (the letter M drawn as a sound wave, teal → blue).
+  The app icon is `data/icons/io.github.gabus.Murmur.svg`. The tray uses the exported
+  symbolic icon `io.github.gabus.Murmur-symbolic` when idle (recoloured by the panel); the
+  pixmaps drawn in `src/icons.rs` cover listening (red, and the wave grows with the voice
+  level), loading and error.

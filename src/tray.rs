@@ -16,7 +16,8 @@ use crate::{
 /// Show the loading animation only if loading takes longer than this (spec).
 const LOADING_GRACE: Duration = Duration::from_millis(300);
 const LOADING_FRAME: Duration = Duration::from_millis(250);
-const IDLE_ICON: &str = "audio-input-microphone-symbolic";
+/// The exported symbolic icon (data/icons): the panel finds it by name and recolours it.
+const IDLE_ICON: &str = "io.github.gabus.Murmur-symbolic";
 
 /// What the icon currently shows (derived from `Status` and timing).
 #[derive(Debug, Clone, PartialEq)]
@@ -86,7 +87,8 @@ impl ksni::Tray for MurmurTray {
 
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
         let look = match &self.shown {
-            Shown::Idle => return Vec::new(),
+            // Only used if the panel can't find IDLE_ICON (e.g. not installed).
+            Shown::Idle => Look::Idle,
             Shown::Listening(l) => Look::Listening { level: *l },
             Shown::Loading(p) => Look::Loading { phase: *p },
             Shown::Waiting => Look::Loading { phase: 0 },

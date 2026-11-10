@@ -4,9 +4,8 @@ use murmur::icons::{LEVELS, Look, render};
 
 fn main() -> std::io::Result<()> {
     let dir = std::env::args().nth(1).unwrap_or_else(|| ".".into());
-    let mut looks: Vec<(String, Look)> = (0..LEVELS)
-        .map(|l| (format!("listen{l}"), Look::Listening { level: l }))
-        .collect();
+    let mut looks: Vec<(String, Look)> = vec![("idle".into(), Look::Idle)];
+    looks.extend((0..LEVELS).map(|l| (format!("listen{l}"), Look::Listening { level: l })));
     looks.extend((0..4).map(|p| (format!("load{p}"), Look::Loading { phase: p })));
     looks.push(("error".into(), Look::Error));
     for size in [22u32, 48] {
