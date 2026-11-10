@@ -1,0 +1,96 @@
+# ONNX Runtime, CPU only, built from source as a shared library (libonnxruntime.so).
+# sherpa-onnx 2.0.1 is released against ORT 1.28.2; 1.28.3 is a patch release on top of it
+# (memory-safety and model-validation fixes, same ABI).
+#
+# Offline build: ORT's CMake reads its dependencies from cmake/deps.txt and, for every
+# https:// URL, first looks for the same path under onnxruntime_CMAKE_DEPS_MIRROR_DIR
+# (default: <source>/mirror). Each archive below is placed there, so FetchContent unpacks
+# the local copy (still checking deps.txt's SHA1) and applies ORT's own patches.
+# FETCHCONTENT_TRY_FIND_PACKAGE_MODE=NEVER keeps it from picking up SDK copies of the
+# same libraries in other versions.
+#
+# The archive list is exactly what this configuration fetches (see docs/packaging.md for how
+# to regenerate it when bumping ORT).
+name: onnxruntime
+buildsystem: cmake-ninja
+subdir: cmake
+builddir: true
+config-opts:
+  # GCC 16 (SDK 26.08) adds warnings ORT treats as errors (COMPILE_WARNING_AS_ERROR).
+  - --compile-no-warning-as-error
+  - -DCMAKE_BUILD_TYPE=Release
+  - -DFETCHCONTENT_TRY_FIND_PACKAGE_MODE=NEVER
+  - -Donnxruntime_BUILD_SHARED_LIB=ON
+  - -Donnxruntime_BUILD_UNIT_TESTS=OFF
+  - -Donnxruntime_BUILD_BENCHMARKS=OFF
+  - -Donnxruntime_RUN_ONNX_TESTS=OFF
+  - -Donnxruntime_ENABLE_PYTHON=OFF
+  - -Donnxruntime_ENABLE_TRAINING=OFF
+  - -Donnxruntime_USE_CUDA=OFF
+  - -Donnxruntime_USE_XNNPACK=OFF
+  - -Donnxruntime_USE_MIMALLOC=OFF
+  - -Donnxruntime_USE_TELEMETRY=OFF
+  - -Donnxruntime_ENABLE_CPUINFO=ON
+  # Match Microsoft's release builds (build.py passes OFF unless --disable_rtti).
+  - -Donnxruntime_DISABLE_RTTI=OFF
+# ThirdPartyNotices.txt covers the libraries linked in statically (abseil, protobuf, onnx, ...).
+license-files:
+  - LICENSE
+  - ThirdPartyNotices.txt
+cleanup:
+  - /include
+  - /lib/cmake
+  - /lib/pkgconfig
+sources:
+  - type: archive
+    url: https://github.com/microsoft/onnxruntime/archive/refs/tags/v1.28.3.tar.gz
+    sha256: 028c87ff8c05ebfd8cb1c5d0703d0cc6c95540dac71df461e3ceda8a3fdc6973
+  # cmake/deps.txt entries used by this configuration (mirror/<URL without https://>).
+  - type: file
+    url: https://github.com/abseil/abseil-cpp/archive/refs/tags/20250814.0.zip
+    sha256: b2bdcf6682d8cb53df365bcc5d6c318a22e55821d9978a10fdb61404c026daff
+    dest: mirror/github.com/abseil/abseil-cpp/archive/refs/tags
+  - type: file
+    url: https://github.com/google/re2/archive/refs/tags/2024-07-02.zip
+    sha256: a835fe55fbdcd8e80f38584ab22d0840662c67f2feb36bd679402da9641dc71e
+    dest: mirror/github.com/google/re2/archive/refs/tags
+  - type: file
+    url: https://github.com/protocolbuffers/protobuf/archive/refs/tags/v21.12.zip
+    sha256: 6a31b662deaeb0ac35e6287bda2f3369b19836e6c9f8828d4da444346f420298
+    dest: mirror/github.com/protocolbuffers/protobuf/archive/refs/tags
+  - type: file
+    url: https://github.com/HowardHinnant/date/archive/refs/tags/v3.0.1.zip
+    sha256: f4300b96f7a304d4ef9bf6e0fa3ded72159f7f2d0f605bdde3e030a0dba7cf9f
+    dest: mirror/github.com/HowardHinnant/date/archive/refs/tags
+  - type: file
+    url: https://github.com/boostorg/mp11/archive/refs/tags/boost-1.82.0.zip
+    sha256: 81431bdc44c439a324e02c07ed067f8f556419fd86f2d8b486ff568df6aac899
+    dest: mirror/github.com/boostorg/mp11/archive/refs/tags
+  - type: file
+    url: https://github.com/nlohmann/json/archive/refs/tags/v3.11.3.zip
+    sha256: 04022b05d806eb5ff73023c280b68697d12b93e1b7267a0b22a1a39ec7578069
+    dest: mirror/github.com/nlohmann/json/archive/refs/tags
+  - type: file
+    url: https://github.com/pytorch/cpuinfo/archive/4628dc060ce4e82345dc166bbac875609db4ff69.zip
+    sha256: 2ed3ebc6c2656cc0aafc7af319e5cb0f97cc9b415eae180f566def84f1ca6a29
+    dest: mirror/github.com/pytorch/cpuinfo/archive
+  - type: file
+    url: https://github.com/microsoft/GSL/archive/refs/tags/v4.2.1.zip
+    sha256: c9291d95f5f6e5c561990d06a589b01d89e553d0f366f0ce723dd1788e7a6076
+    dest: mirror/github.com/microsoft/GSL/archive/refs/tags
+  - type: file
+    url: https://github.com/dcleblanc/SafeInt/archive/refs/tags/3.0.28.zip
+    sha256: 3ffbd9a2fdff45da77da3e7269e9aa512ea43bed5c38ce8fd8f3d1068a032c3f
+    dest: mirror/github.com/dcleblanc/SafeInt/archive/refs/tags
+  - type: file
+    url: https://github.com/google/flatbuffers/archive/refs/tags/v23.5.26.zip
+    sha256: 57bd580c0772fd1a726c34ab8bf05325293bc5f9c165060a898afa1feeeb95e1
+    dest: mirror/github.com/google/flatbuffers/archive/refs/tags
+  - type: file
+    url: https://github.com/onnx/onnx/archive/refs/tags/v1.22.0.zip
+    sha256: 8dc1181d33529a1249e031226126d0699ac9bdfc571ee530ee3a12f4656f2be3
+    dest: mirror/github.com/onnx/onnx/archive/refs/tags
+  - type: file
+    url: https://github.com/eigen-mirror/eigen/archive/1d8b82b0740839c0de7f1242a3585e3390ff5f33/eigen-1d8b82b0740839c0de7f1242a3585e3390ff5f33.zip
+    sha256: 6a60d76351f97132669daeeb721d6bf14b008101883ad2d687a3201c5c461eb0
+    dest: mirror/github.com/eigen-mirror/eigen/archive/1d8b82b0740839c0de7f1242a3585e3390ff5f33

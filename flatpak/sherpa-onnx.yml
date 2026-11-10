@@ -1,0 +1,93 @@
+# sherpa-onnx C API (libsherpa-onnx-c-api.so), built from source against the ONNX Runtime
+# module (flatpak/onnxruntime.yml). The `sherpa-onnx` Rust crate links it with its `shared`
+# feature and SHERPA_ONNX_LIB_DIR=/app/lib (murmur's `sherpa-shared` feature).
+#
+# Offline build: each dependency's cmake/*.cmake looks for its archive in
+# ${CMAKE_SOURCE_DIR}/<file> before downloading, so the archives below sit in the source root.
+# Versions and hashes are the ones pinned in sherpa-onnx 2.0.1's cmake/*.cmake (kissfft is
+# pinned by kaldi-native-fbank, kaldifst by kaldi-decoder).
+name: sherpa-onnx
+buildsystem: cmake-ninja
+builddir: true
+build-options:
+  env:
+    # Use the ONNX Runtime built in the previous module (cmake/onnxruntime.cmake).
+    SHERPA_ONNXRUNTIME_INCLUDE_DIR: /app/include/onnxruntime
+    SHERPA_ONNXRUNTIME_LIB_DIR: /app/lib
+config-opts:
+  - -DCMAKE_BUILD_TYPE=Release
+  - -DBUILD_SHARED_LIBS=ON
+  - -DSHERPA_ONNX_ENABLE_C_API=ON
+  - -DSHERPA_ONNX_USE_PRE_INSTALLED_ONNXRUNTIME_IF_AVAILABLE=ON
+  # Speech recognition, VAD and punctuation only. TTS and diarization C functions remain
+  # as stubs that log an error, so the Rust crate still links.
+  - -DSHERPA_ONNX_ENABLE_TTS=OFF
+  - -DSHERPA_ONNX_ENABLE_SPEAKER_DIARIZATION=OFF
+  - -DSHERPA_ONNX_ENABLE_WEBSOCKET=OFF
+  - -DSHERPA_ONNX_ENABLE_PORTAUDIO=OFF
+  - -DSHERPA_ONNX_ENABLE_PYTHON=OFF
+  - -DSHERPA_ONNX_ENABLE_JNI=OFF
+  - -DSHERPA_ONNX_ENABLE_GPU=OFF
+  - -DSHERPA_ONNX_ENABLE_TESTS=OFF
+  - -DSHERPA_ONNX_ENABLE_BINARY=OFF
+  - -DSHERPA_ONNX_BUILD_C_API_EXAMPLES=OFF
+post-install:
+  # License files of the libraries compiled into libsherpa-onnx-c-api.so (kaldi-native-fbank,
+  # kissfft, kaldi-decoder, kaldifst, openfst, utf8proc, simple-sentencepiece, and the
+  # header-only eigen and nlohmann json). flatpak-builder installs sherpa-onnx's own LICENSE.
+  # post-install runs in the CMake build directory (_flatpak_build).
+  - |
+    for src in _deps/*-src; do
+      name=$(basename "$src" -src)
+      for f in "$src"/LICENSE* "$src"/COPYING* "$src"/LICENSES/*; do
+        if [ -f "$f" ]; then
+          install -Dm644 "$f" "${FLATPAK_DEST}/share/licenses/${FLATPAK_ID}/sherpa-onnx/deps/$name/$(basename "$f")"
+        fi
+      done
+    done
+    test -n "$(ls "${FLATPAK_DEST}/share/licenses/${FLATPAK_ID}/sherpa-onnx/deps")"
+cleanup:
+  - /include
+  - /sherpa-onnx.pc
+  # murmur uses the C API only.
+  - /lib/libsherpa-onnx-cxx-api.so
+sources:
+  - type: archive
+    url: https://github.com/k2-fsa/sherpa-onnx/archive/refs/tags/v2.0.1.tar.gz
+    sha256: 24ecc0fccf6344c2556e7c229c849e9f61bf9456b915615197d85f35e3f177e7
+  - type: file
+    url: https://github.com/csukuangfj/kaldi-native-fbank/archive/refs/tags/v1.22.4.tar.gz
+    sha256: 257fea639585ca6ee00860493bb9d7ab32488b8a5407ffe434c1f361ea545fae
+    dest-filename: kaldi-native-fbank-1.22.4.tar.gz
+  - type: file
+    url: https://github.com/mborgerding/kissfft/archive/febd4caeed32e33ad8b2e0bb5ea77542c40f18ec.zip
+    sha256: 497103e664168ebe39580b757adbe616f6cf85a16572af581ca7bc42d0ab13fd
+    dest-filename: kissfft-febd4caeed32e33ad8b2e0bb5ea77542c40f18ec.zip
+  - type: file
+    url: https://github.com/k2-fsa/kaldi-decoder/archive/refs/tags/v0.3.0.tar.gz
+    sha256: b9f34cfb4fd3b1344100eead79ef4d37aa15962274b9e3056de345021f76a1b0
+    dest-filename: kaldi-decoder-0.3.0.tar.gz
+  - type: file
+    url: https://github.com/k2-fsa/kaldifst/archive/refs/tags/v1.8.0.tar.gz
+    sha256: 3f247b7e5a2409071202f5e2bc6200060f66728c0a3443c03923ad2723e040b3
+    dest-filename: kaldifst-1.8.0.tar.gz
+  - type: file
+    url: https://github.com/csukuangfj/openfst/archive/refs/tags/v1.8.5-2026-07-09.tar.gz
+    sha256: 2ff712a32952fcb01d351121a6bc8ccf4fdc6b2aa06ce8df2b3095dedd518c0e
+    dest-filename: openfst-1.8.5-2026-07-09.tar.gz
+  - type: file
+    url: https://gitlab.com/libeigen/eigen/-/archive/5.0.1/eigen-5.0.1.tar.gz
+    sha256: e9c326dc8c05cd1e044c71f30f1b2e34a6161a3b6ecf445d56b53ff1669e3dec
+    dest-filename: eigen-5.0.1.tar.gz
+  - type: file
+    url: https://github.com/JuliaStrings/utf8proc/archive/refs/tags/v2.12.0.tar.gz
+    sha256: f564011d38b2888d583d510b08e69ffa15aa117155db1b9b49ef1dfe1fa25111
+    dest-filename: utf8proc-2.12.0.tar.gz
+  - type: file
+    url: https://github.com/pkufool/simple-sentencepiece/archive/refs/tags/v0.7.tar.gz
+    sha256: 1748a822060a35baa9f6609f84efc8eb54dc0e74b9ece3d82367b7119fdc75af
+    dest-filename: simple-sentencepiece-0.7.tar.gz
+  - type: file
+    url: https://github.com/nlohmann/json/archive/refs/tags/v3.12.0.tar.gz
+    sha256: 4b92eb0c06d10683f7447ce9406cb97cd4b453be18d7279320f7b2f025c10187
+    dest-filename: json-3.12.0.tar.gz

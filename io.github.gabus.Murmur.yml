@@ -1,10 +1,9 @@
-# murmur Flatpak manifest.
-# DEVELOPMENT VERSION: crates and sherpa-onnx's prebuilt static libs are fetched with
-# network access at build time. Stage 5 replaces this with offline cargo sources
-# (flatpak-cargo-generator) and onnxruntime/sherpa-onnx built from source for Flathub.
-#   flatpak run org.flatpak.Builder --user --install --force-clean \
+# murmur Flatpak manifest. Builds fully offline and from source: ONNX Runtime and the
+# sherpa-onnx C API are separate modules, and the Rust crates are vendored through
+# flatpak/cargo-sources.json (regenerate it whenever Cargo.lock changes, see README).
+#   flatpak run org.flatpak.Builder --user --install --force-clean --sandbox \
 #     --state-dir=.flatpak-builder build-dir io.github.gabus.Murmur.yml
-app-id: io.github.gabus.Murmur
+id: io.github.gabus.Murmur
 runtime: org.freedesktop.Platform
 runtime-version: '26.08'
 sdk: org.freedesktop.Sdk
@@ -16,26 +15,41 @@ finish-args:
   - --socket=pulseaudio                         # microphone
   - --share=network                             # model download only
   - --talk-name=org.kde.StatusNotifierWatcher   # tray icon
-build-options:
-  append-path: /usr/lib/sdk/rust-stable/bin
+cleanup:
+  - /include
+  - /lib/cmake
+  - /lib/pkgconfig
+  - '*.a'
 modules:
+  - flatpak/onnxruntime.yml
+  - flatpak/sherpa-onnx.yml
+
   - name: murmur
     buildsystem: simple
     build-options:
-      build-args:
-        - --share=network
+      append-path: /usr/lib/sdk/rust-stable/bin
       env:
         CARGO_HOME: /run/build/murmur/cargo
+        CARGO_NET_OFFLINE: 'true'
+        # sherpa-onnx-sys links the C API built above instead of downloading prebuilt libs.
+        SHERPA_ONNX_LIB_DIR: /app/lib
     build-commands:
-      - cargo build --release --locked
-      - install -Dm755 target/release/murmur /app/bin/murmur
+      - cargo --offline build --release --locked --no-default-features --features sherpa-shared
+      - install -Dm755 target/release/murmur -t /app/bin
+      - install -Dm644 data/io.github.gabus.Murmur.desktop -t /app/share/applications
+      - install -Dm644 data/io.github.gabus.Murmur.metainfo.xml -t /app/share/metainfo
+      - install -Dm644 data/icons/io.github.gabus.Murmur.svg -t /app/share/icons/hicolor/scalable/apps
+      - install -Dm644 data/icons/io.github.gabus.Murmur-128.png /app/share/icons/hicolor/128x128/apps/io.github.gabus.Murmur.png
     sources:
       - type: dir
         path: .
         skip:
-          - target
-          - spike
-          - build-dir
-          - .flatpak-builder
+          - .git
           - .claude
           - .idea
+          - .flatpak-builder
+          - build-dir
+          - repo
+          - target
+          - spike
+      - flatpak/cargo-sources.json
