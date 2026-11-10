@@ -26,19 +26,20 @@ Goal: prove the two uncertain pieces before writing the real app.
 
 Goal: `murmur` daemon, hotkey toggles listening, phrases get typed.
 
-- [ ] Project skeleton: `tokio`, `tracing`, module layout (`audio`, `vad`, `asr`, `output`, `hotkey`, `app`)
-- [ ] Evaluate `sherpa-rs` vs. own FFI to the sherpa-onnx C API (streaming support, build story, Flatpak friendliness)
-- [ ] Audio capture at 16 kHz mono with `cpal`; stream opened only on start, dropped on stop
-- [ ] Silero VAD: segment speech, emit end-of-phrase events
-- [ ] Re-check engine: re-run Parakeet TDT on the current sentence buffer every ~0.5 s
-- [ ] Local-agreement committer: type words that two consecutive runs agree on; flush on pause / stop
-- [ ] Trim the buffer at committed sentence ends so each run stays short
+- [x] Project skeleton: `tokio`, `tracing`, module layout (`audio`, `vad`, `asr`, `output`, `hotkey`, `app`)
+- [x] Evaluate `sherpa-rs` vs. own FFI to the sherpa-onnx C API → neither: the official `sherpa-onnx` crate (2.0.1) covers offline/online ASR, VAD, punctuation; `sherpa-rs` is archived. Flatpak: `shared` feature + `SHERPA_ONNX_LIB_DIR` from a source-built module (Stage 5)
+- [x] Audio capture at 16 kHz mono with `cpal`; stream opened only on start, dropped on stop
+- [x] Silero VAD: segment speech, emit end-of-phrase events
+- [x] Re-check engine: re-run Parakeet TDT on the current sentence buffer every ~0.5 s
+- [x] Local-agreement committer: type words that two consecutive runs agree on; flush on pause / stop
+- [x] Trim the buffer at committed sentence ends so each run stays short
 - [ ] Output: type each committed word through the RemoteDesktop portal, with spacing
-- [ ] Measure: lag from spoken word to typed word, CPU while speaking, Parakeet run time per buffer length
-- [ ] State machine: `Idle → Listening(+Loading) → Idle`, toggled by the shortcut only, never by silence
-- [ ] Ring-buffer audio from key press so speech during model load isn't lost
-- [ ] On stop: flush the phrase in progress (transcribe + insert), then close the mic
-- [ ] Hard-coded model path for now
+- [x] Measure: lag from spoken word to typed word, CPU while speaking, Parakeet run time per buffer length (`docs/benchmarks.md`)
+- [ ] End-to-end check of the daemon (hotkey → mic → typed text) in a nested KWin, then in the Flatpak
+- [x] State machine: `Idle → Listening(+Loading) → Idle`, toggled by the shortcut only, never by silence
+- [x] Ring-buffer audio from key press so speech during model load isn't lost (worker channel buffers everything from Begin)
+- [x] On stop: flush the phrase in progress (transcribe + insert), then close the mic (250 ms tail)
+- [x] Hard-coded model path for now
 
 ## Stage 2: Tray
 
@@ -100,9 +101,9 @@ Goal: `murmur` daemon, hotkey toggles listening, phrases get typed.
 
 - [ ] Does the RemoteDesktop portal remember permission across restarts on KDE / GNOME? (KDE: yes, see findings)
 - [ ] Does the GlobalShortcuts portal report key release (needed for hold-to-talk)?
-- [ ] Is `sherpa-rs` complete enough for streaming + VAD, or do we need our own bindings?
+- [x] Is `sherpa-rs` complete enough for streaming + VAD, or do we need our own bindings? → use the official `sherpa-onnx` crate
 - [ ] Will Flathub accept prebuilt onnxruntime, or must it be built from source?
-- [ ] Re-check CPU cost: can Parakeet re-run every ~0.5 s on CPU without noticeable load? If not, re-run less often or default to Moonshine.
+- [x] Re-check CPU cost: can Parakeet re-run every ~0.5 s on CPU without noticeable load? → yes on a 7700X: 16 % of real time (`docs/benchmarks.md`); weaker CPUs TBD
 - [ ] Parakeet v3 auto language detection during re-check: do consecutive runs flip language on short/ambiguous starts? If so, add a "language: auto / fixed" setting.
 - [ ] int8 vs. full-precision Parakeet v3: accuracy and speed difference on CPU.
 - [ ] Best delay: compare accuracy at 0.5 / 1 / 1.5 s against whole-phrase Parakeet on the same recordings.
