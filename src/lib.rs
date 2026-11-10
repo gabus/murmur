@@ -9,4 +9,5 @@ pub mod dev;
 pub mod hotkey;
 pub mod output;
 pub mod paths;
+pub mod portal;
 pub mod vad;

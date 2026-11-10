@@ -11,7 +11,7 @@ use murmur::{
     paths,
 };
 use tokio::sync::{mpsc, watch};
-use tracing::{info, warn};
+use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 /// Stage 1: hard-coded default model (the model registry comes in stage 3).
@@ -36,13 +36,8 @@ async fn run() -> Result<()> {
     let state = paths::state_dir().context("cannot determine $XDG_STATE_HOME")?;
     std::fs::create_dir_all(&state).context("creating state dir")?;
 
-    if !ashpd::is_sandboxed() {
-        // Host apps must tell the portal who they are (needs the .desktop file installed).
-        let id = ashpd::AppID::try_from(paths::APP_ID).context("app id")?;
-        if let Err(e) = ashpd::register_host_app(id).await {
-            warn!(error = %e, "could not register host app ID with the portal");
-        }
-    }
+    // Before any portal call (needs the .desktop file installed when not sandboxed).
+    murmur::portal::register_host_app().await;
 
     let threads = std::thread::available_parallelism()
         .map(|n| (n.get() / 2).clamp(1, 4))
