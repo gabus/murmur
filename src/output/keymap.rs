@@ -102,6 +102,8 @@ pub struct KeyTable {
     /// Control, Mod1 (Alt) and Mod4 (Super): while any is held, typed letters would become
     /// shortcuts.
     blocking_mask: u32,
+    /// See [`KeyTable::probe_key`].
+    probe_key: Option<u32>,
 }
 
 impl KeyTable {
@@ -147,12 +149,21 @@ impl KeyTable {
             groups,
             lock_mask,
             blocking_mask,
+            probe_key: probe_key(keymap, blocking_mask),
         }
     }
 
     /// Layout names, one per group (e.g. `["English (US)", "Lithuanian"]`).
     pub fn layouts(&self) -> &[String] {
         &self.layouts
+    }
+
+    /// A modifier key that is safe to tap whatever the current group: it produces
+    /// `ISO_Level3_Shift` (or else `Shift`) in every group and sets no Control/Alt/Super.
+    /// Tapping it makes the compositor report the full modifier state (group, Caps Lock, held
+    /// keys), which KWin otherwise only sends after the first change.
+    pub fn probe_key(&self) -> Option<u32> {
+        self.probe_key
     }
 
     /// `true` while Control, Alt or Super is held: typing now would trigger shortcuts.
@@ -251,9 +262,8 @@ fn build_group(keymap: &xkb::Keymap, group: u32, lock_mask: u32, blocking: u32) 
             for &k in &held {
                 let _ = state.update_key(k, xkb::KeyDirection::Down);
             }
-            for raw in keymap.min_keycode().raw()..=keymap.max_keycode().raw() {
-                let key = xkb::Keycode::new(raw);
-                if held.contains(&key) || raw < EVDEV_OFFSET {
+            for key in keycodes(keymap) {
+                if held.contains(&key) {
                     continue;
                 }
                 let sym = state.key_get_one_sym(key);
@@ -262,7 +272,7 @@ fn build_group(keymap: &xkb::Keymap, group: u32, lock_mask: u32, blocking: u32) 
                 }
                 // First hit wins: COMBOS and keycodes are iterated cheapest first.
                 table.entry(sym.raw()).or_insert(Stroke {
-                    key: raw - EVDEV_OFFSET,
+                    key: key.raw() - EVDEV_OFFSET,
                     shift: want_shift,
                     level3: want_level3,
                 });
@@ -286,28 +296,58 @@ fn modifier_key(
     syms: &[xkb::Keysym],
     blocking: u32,
 ) -> Option<xkb::Keycode> {
-    let usable = |key: xkb::Keycode| {
-        let produces = keymap
-            .key_get_syms_by_level(key, group, 0)
-            .first()
-            .is_some_and(|s| syms.contains(s));
-        if !produces {
-            return false;
-        }
-        let mut state = xkb::State::new(keymap);
-        state.update_mask(0, 0, 0, 0, 0, group);
-        let _ = state.update_key(key, xkb::KeyDirection::Down);
-        let set = state.serialize_mods(xkb::STATE_MODS_DEPRESSED);
-        set != 0 && set & blocking == 0
-    };
+    let usable = |key| is_safe_modifier(keymap, key, group, syms, blocking);
     keymap
         .key_by_name(preferred)
         .filter(|&k| usable(k))
+        .or_else(|| keycodes(keymap).find(|&k| usable(k)))
+}
+
+/// See [`KeyTable::probe_key`].
+fn probe_key(keymap: &xkb::Keymap, blocking: u32) -> Option<u32> {
+    let everywhere = |key, syms: &[xkb::Keysym]| {
+        (0..keymap.num_layouts()).all(|g| is_safe_modifier(keymap, key, g, syms, blocking))
+    };
+    keycodes(keymap)
+        .find(|&k| everywhere(k, &[xkb::Keysym::ISO_Level3_Shift]))
         .or_else(|| {
-            (keymap.min_keycode().raw()..=keymap.max_keycode().raw())
-                .map(xkb::Keycode::new)
-                .find(|&k| k.raw() >= EVDEV_OFFSET && usable(k))
+            keymap
+                .key_by_name("LFSH")
+                .filter(|&k| everywhere(k, &[xkb::Keysym::Shift_L]))
         })
+        .or_else(|| {
+            keycodes(keymap).find(|&k| everywhere(k, &[xkb::Keysym::Shift_L, xkb::Keysym::Shift_R]))
+        })
+        .map(|k| k.raw() - EVDEV_OFFSET)
+}
+
+/// Keycodes that have an evdev equivalent.
+fn keycodes(keymap: &xkb::Keymap) -> impl Iterator<Item = xkb::Keycode> {
+    (keymap.min_keycode().raw().max(EVDEV_OFFSET)..=keymap.max_keycode().raw())
+        .map(xkb::Keycode::new)
+}
+
+/// `key` produces one of `syms` at level 1 of `group`, and pressing it sets some modifier but
+/// not Control/Alt/Super.
+fn is_safe_modifier(
+    keymap: &xkb::Keymap,
+    key: xkb::Keycode,
+    group: u32,
+    syms: &[xkb::Keysym],
+    blocking: u32,
+) -> bool {
+    let produces = keymap
+        .key_get_syms_by_level(key, group, 0)
+        .first()
+        .is_some_and(|s| syms.contains(s));
+    if !produces {
+        return false;
+    }
+    let mut state = xkb::State::new(keymap);
+    state.update_mask(0, 0, 0, 0, 0, group);
+    let _ = state.update_key(key, xkb::KeyDirection::Down);
+    let set = state.serialize_mods(xkb::STATE_MODS_DEPRESSED);
+    set != 0 && set & blocking == 0
 }
 
 #[cfg(test)]
@@ -438,6 +478,16 @@ mod tests {
         assert_eq!(t.stroke('a', &caps), stroke(KEY_A, true, false));
         // Caps Lock doesn't affect punctuation.
         assert_eq!(t.stroke('?', &caps), stroke(KEY_SLASH, true, false));
+    }
+
+    #[test]
+    fn probe_key_is_level3_in_every_group() {
+        // <LVL3> (evdev 84) is ISO_Level3_Shift in every group of xkeyboard-config keymaps,
+        // unlike right Alt, which is Alt_R (a blocking modifier) on us.
+        const KEY_LVL3: u32 = 84;
+        for layout in ["us", "us,lt", "de,us", "lt"] {
+            assert_eq!(table(layout).probe_key(), Some(KEY_LVL3), "{layout}");
+        }
     }
 
     #[test]
