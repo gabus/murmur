@@ -610,10 +610,10 @@ impl App {
                         self.shortcut.pending = true;
                         self.shortcut.error = None;
                     }
-                    (Some(h), _) => {
-                        h.configure();
-                        self.shortcut.pending = true;
-                    }
+                    // Opens the desktop's shortcut settings and returns at once. Don't
+                    // wait: the user may close them unchanged. A change still arrives
+                    // as ShortcutsChanged → Bound.
+                    (Some(h), _) => h.configure(),
                     _ => {}
                 }
             }
