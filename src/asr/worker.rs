@@ -5,7 +5,6 @@
 //! still loading ("nothing is lost").
 
 use std::{
-    path::PathBuf,
     sync::mpsc::{self, Receiver, Sender},
     thread::JoinHandle,
     time::Instant,
@@ -14,12 +13,11 @@ use std::{
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, error, info, trace};
 
-use super::{
-    AsrError,
-    engine::{EngineConfig, RecheckEngine, SAMPLE_RATE},
-    parakeet::Parakeet,
+use super::{AsrError, Engine, engine::SAMPLE_RATE};
+use crate::{
+    agc::Agc,
+    models::{self, LoadSpec},
 };
-use crate::{agc::Agc, vad::SileroVad};
 
 /// Identifies one listening session (one press-to-press dictation).
 pub type SessionId = u64;
@@ -35,6 +33,8 @@ pub enum AsrInput {
     End,
     /// Drop the models (idle unload).
     Unload,
+    /// Use another model from the next session on (unloads the current one).
+    SetModel(LoadSpec),
     Shutdown,
 }
 
@@ -54,23 +54,13 @@ pub enum AsrOutput {
     Error(AsrError),
 }
 
-#[derive(Debug, Clone)]
-pub struct WorkerConfig {
-    pub parakeet_dir: PathBuf,
-    pub vad_model: PathBuf,
-    /// Pause that ends a phrase (seconds).
-    pub min_silence: f32,
-    pub threads: i32,
-    pub engine: EngineConfig,
-}
-
 pub struct AsrWorker {
     tx: Sender<AsrInput>,
     join: Option<JoinHandle<()>>,
 }
 
 impl AsrWorker {
-    pub fn spawn(cfg: WorkerConfig, out: UnboundedSender<AsrOutput>) -> std::io::Result<Self> {
+    pub fn spawn(cfg: LoadSpec, out: UnboundedSender<AsrOutput>) -> std::io::Result<Self> {
         let (tx, rx) = mpsc::channel();
         let join = std::thread::Builder::new()
             .name("murmur-asr".into())
@@ -105,14 +95,11 @@ impl Drop for AsrWorker {
     }
 }
 
-type Engine = RecheckEngine<Parakeet, SileroVad>;
-
-fn load(cfg: &WorkerConfig) -> Result<Engine, AsrError> {
+fn load(spec: &LoadSpec) -> Result<Box<dyn Engine>, AsrError> {
     let t = Instant::now();
-    let vad = SileroVad::load(&cfg.vad_model, cfg.min_silence)?;
-    let model = Parakeet::load(&cfg.parakeet_dir, cfg.threads)?;
-    info!(elapsed = ?t.elapsed(), "model loaded");
-    Ok(RecheckEngine::new(cfg.engine.clone(), model, vad))
+    let engine = models::load_engine(spec)?;
+    info!(model = spec.model.id, elapsed = ?t.elapsed(), "model loaded");
+    Ok(engine)
 }
 
 /// VAD state is sampled per push; feed backlogs in slices this long (seconds)
@@ -126,8 +113,9 @@ struct Session {
     agc: Agc,
 }
 
-fn run(cfg: WorkerConfig, rx: Receiver<AsrInput>, out: UnboundedSender<AsrOutput>) {
-    let mut engine: Option<Engine> = None;
+fn run(mut cfg: LoadSpec, rx: Receiver<AsrInput>, out: UnboundedSender<AsrOutput>) {
+    let mut engine: Option<Box<dyn Engine>> = None;
+    let mut next_model: Option<LoadSpec> = None;
     let mut session: Option<Session> = None;
     let mut held: Option<AsrInput> = None;
     let emit = |words: Vec<super::words::Word>| {
@@ -146,6 +134,10 @@ fn run(cfg: WorkerConfig, rx: Receiver<AsrInput>, out: UnboundedSender<AsrOutput
         };
         match msg {
             AsrInput::Begin(id) => {
+                if let Some(spec) = next_model.take() {
+                    cfg = spec;
+                    engine = None;
+                }
                 if engine.is_none() {
                     let _ = out.send(AsrOutput::Loading);
                     match load(&cfg) {
@@ -220,6 +212,17 @@ fn run(cfg: WorkerConfig, rx: Receiver<AsrInput>, out: UnboundedSender<AsrOutput
             AsrInput::Unload => {
                 if session.is_none() && engine.take().is_some() {
                     info!("model unloaded");
+                }
+            }
+            AsrInput::SetModel(spec) => {
+                if session.is_none() {
+                    if engine.take().is_some() {
+                        info!("model unloaded for a model change");
+                    }
+                    cfg = spec;
+                } else {
+                    // Takes effect when the next session begins.
+                    next_model = Some(spec);
                 }
             }
             AsrInput::Shutdown => break,

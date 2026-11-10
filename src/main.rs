@@ -1,10 +1,7 @@
 use anyhow::{Context, Result};
 use murmur::{
     app::{App, Command, Status},
-    asr::{
-        engine::EngineConfig,
-        worker::{AsrWorker, WorkerConfig},
-    },
+    asr::{engine::EngineConfig, worker::AsrWorker},
     audio::Level,
     hotkey::Hotkey,
     notify::Notifier,
@@ -14,10 +11,6 @@ use murmur::{
 use tokio::sync::{mpsc, watch};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
-
-/// Stage 1: hard-coded default model (the model registry comes in stage 3).
-const PARAKEET_DIR: &str = "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8";
-const VAD_FILE: &str = "silero_vad.onnx";
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -44,17 +37,26 @@ async fn run() -> Result<()> {
         .map(|n| (n.get() / 2).clamp(1, 4))
         .unwrap_or(2) as i32;
     let (asr_tx, asr_rx) = mpsc::unbounded_channel();
-    let asr = AsrWorker::spawn(
-        WorkerConfig {
-            parakeet_dir: models.join(PARAKEET_DIR),
-            vad_model: models.join(VAD_FILE),
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let config_path = murmur::config::Config::path();
+    let config = config_path
+        .as_deref()
+        .map(murmur::config::Config::load_from)
+        .unwrap_or_default();
+    let default_model = murmur::models::find(murmur::models::DEFAULT_MODEL)
+        .context("default model missing from the registry")?;
+    let (models_mgr, models_view, model_events) = murmur::model_manager::ModelManager::new(
+        config,
+        config_path,
+        murmur::models::LoadSpec {
+            model: default_model,
+            models_dir: models.clone(),
             min_silence: 0.8,
             threads,
             engine: EngineConfig::default(),
         },
-        asr_tx,
-    )
-    .context("starting ASR worker")?;
+    );
+    let asr = AsrWorker::spawn(models_mgr.active_spec(), asr_tx).context("starting ASR worker")?;
 
     let (out_tx, out_rx) = mpsc::unbounded_channel();
     let source = EisSource::Portal {
@@ -114,6 +116,7 @@ async fn run() -> Result<()> {
     tokio::spawn(murmur::tray::run(
         tray_status,
         level_rx,
+        models_view,
         cmd_tx.clone(),
         shortcut,
     ));
@@ -123,8 +126,8 @@ async fn run() -> Result<()> {
     });
 
     info!("murmur ready — press the shortcut to dictate");
-    App::new(asr, output, level, status_tx, notifier)
-        .run(cmd_rx, hk_rx, asr_rx, out_rx)
+    App::new(asr, output, level, status_tx, notifier, models_mgr)
+        .run(cmd_rx, hk_rx, asr_rx, out_rx, model_events)
         .await;
     Ok(())
 }

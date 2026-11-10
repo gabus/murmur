@@ -6,7 +6,7 @@
 
 use super::{
     AsrError,
-    committer::Committer,
+    committer::{Committer, SeqCommitter},
     words::{Word, ends_sentence},
 };
 
@@ -17,6 +17,21 @@ const SR: f64 = SAMPLE_RATE as f64;
 pub trait Transcriber {
     /// Transcribes 16 kHz mono samples. Word times are relative to `samples[0]`.
     fn transcribe(&mut self, samples: &[f32]) -> Result<Vec<Word>, AsrError>;
+
+    /// False for models without token timestamps (e.g. Moonshine): their word
+    /// times are meaningless, so the engine aligns by word sequence instead.
+    fn has_timestamps(&self) -> bool {
+        true
+    }
+}
+
+impl Transcriber for Box<dyn Transcriber + Send> {
+    fn transcribe(&mut self, samples: &[f32]) -> Result<Vec<Word>, AsrError> {
+        (**self).transcribe(samples)
+    }
+    fn has_timestamps(&self) -> bool {
+        (**self).has_timestamps()
+    }
 }
 
 /// Voice activity detection with hangover: `is_speech` stays true until the
@@ -76,12 +91,31 @@ pub struct RecheckEngine<T, V> {
     decoded_len: usize,
     heard_speech: bool,
     was_speech: bool,
-    committer: Committer,
+    commit: Commit,
     stats: EngineStats,
+}
+
+/// How hypotheses are aligned: by word times, or by word sequence for models
+/// without timestamps (then the buffer is only cut at pauses).
+#[derive(Debug)]
+enum Commit {
+    Timed(Committer),
+    Seq(SeqCommitter),
+}
+
+impl Commit {
+    fn for_model(timestamps: bool) -> Self {
+        if timestamps {
+            Self::Timed(Committer::new())
+        } else {
+            Self::Seq(SeqCommitter::new())
+        }
+    }
 }
 
 impl<T: Transcriber, V: SpeechDetector> RecheckEngine<T, V> {
     pub fn new(cfg: EngineConfig, transcriber: T, vad: V) -> Self {
+        let commit = Commit::for_model(transcriber.has_timestamps());
         Self {
             cfg,
             transcriber,
@@ -92,7 +126,7 @@ impl<T: Transcriber, V: SpeechDetector> RecheckEngine<T, V> {
             decoded_len: 0,
             heard_speech: false,
             was_speech: false,
-            committer: Committer::new(),
+            commit,
             stats: EngineStats::default(),
         }
     }
@@ -105,7 +139,7 @@ impl<T: Transcriber, V: SpeechDetector> RecheckEngine<T, V> {
         self.decoded_len = 0;
         self.heard_speech = false;
         self.was_speech = false;
-        self.committer = Committer::new();
+        self.commit = Commit::for_model(self.transcriber.has_timestamps());
         self.stats = EngineStats::default();
         self.vad.reset();
     }
@@ -156,30 +190,50 @@ impl<T: Transcriber, V: SpeechDetector> RecheckEngine<T, V> {
     fn recheck(&mut self) -> Result<Vec<Word>, AsrError> {
         let words = self.transcribe_buffer()?;
         let now = self.now();
-        let committed = self.committer.insert(words, now, self.cfg.min_age);
         self.decoded_len = self.buf.len();
+        let committed = match &mut self.commit {
+            Commit::Timed(c) => c.insert(words, now, self.cfg.min_age),
+            Commit::Seq(c) => c.insert(words),
+        };
         self.note_commits(&committed, now);
-        if self.buf_secs() > self.cfg.hard_max_buffer {
-            // Nothing agrees for a long time: give up on agreement for this stretch.
+        let limit = match self.commit {
+            Commit::Timed(_) => self.cfg.hard_max_buffer,
+            // No timestamps → no mid-buffer trims; end the phrase instead.
+            Commit::Seq(_) => self.cfg.max_buffer,
+        };
+        if self.buf_secs() > limit {
+            // Nothing agrees for a long time (or no way to trim): flush this stretch.
             let mut rest = self.end_phrase()?;
             let mut all = committed;
             all.append(&mut rest);
             return Ok(all);
         }
-        self.trim_after(&committed);
+        if matches!(self.commit, Commit::Timed(_)) {
+            self.trim_after(&committed);
+        }
         Ok(committed)
     }
 
     fn end_phrase(&mut self) -> Result<Vec<Word>, AsrError> {
         let words = self.transcribe_buffer()?;
-        let committed = self.committer.flush(words);
+        let committed = match &mut self.commit {
+            Commit::Timed(c) => {
+                let out = c.flush(words);
+                c.clear_pending();
+                out
+            }
+            Commit::Seq(c) => {
+                let out = c.flush(words);
+                c.new_buffer();
+                out
+            }
+        };
         let now = self.now();
         self.note_commits(&committed, now);
         self.buf_start += self.buf.len() as f64 / SR;
         self.buf.clear();
         self.decoded_len = 0;
         self.heard_speech = false;
-        self.committer.clear_pending();
         Ok(committed)
     }
 
@@ -205,7 +259,10 @@ impl<T: Transcriber, V: SpeechDetector> RecheckEngine<T, V> {
             .find(|w| ends_sentence(&w.text))
             .map(|w| w.end)
             .or_else(|| {
-                (self.buf_secs() > self.cfg.max_buffer).then(|| self.committer.committed_end())
+                let Commit::Timed(c) = &self.commit else {
+                    return None;
+                };
+                (self.buf_secs() > self.cfg.max_buffer).then(|| c.committed_end())
             });
         if let Some(t) = cut {
             self.cut_at(t);
@@ -237,12 +294,36 @@ impl<T: Transcriber, V: SpeechDetector> RecheckEngine<T, V> {
     }
 
     fn note_commits(&mut self, committed: &[Word], now: f64) {
+        let timed = matches!(self.commit, Commit::Timed(_));
         for w in committed {
+            if !timed {
+                self.stats.committed_words += 1;
+                continue;
+            }
             let lag = (now - w.end).max(0.0);
             self.stats.committed_words += 1;
             self.stats.total_commit_lag += lag;
             self.stats.max_commit_lag = self.stats.max_commit_lag.max(lag);
         }
+    }
+}
+
+impl<T, V> super::Engine for RecheckEngine<T, V>
+where
+    T: Transcriber + Send,
+    V: SpeechDetector + Send,
+{
+    fn push(&mut self, samples: &[f32]) -> Result<Vec<Word>, AsrError> {
+        RecheckEngine::push(self, samples)
+    }
+    fn finish(&mut self) -> Result<Vec<Word>, AsrError> {
+        RecheckEngine::finish(self)
+    }
+    fn reset(&mut self) {
+        RecheckEngine::reset(self);
+    }
+    fn stats(&self) -> EngineStats {
+        self.stats.clone()
     }
 }
 

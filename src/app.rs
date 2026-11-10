@@ -2,6 +2,8 @@
 
 use std::time::Duration;
 
+use tokio::time::Instant;
+
 use tokio::{
     sync::{mpsc, watch},
     task::JoinHandle,
@@ -12,6 +14,7 @@ use crate::{
     asr::worker::{AsrInput, AsrOutput, AsrWorker, SessionId},
     audio::{Capture, Level},
     hotkey::HotkeyEvent,
+    model_manager::{ModelEvent, ModelManager, Outcome},
     notify::Notifier,
     output::{Output, OutputEvent},
 };
@@ -37,6 +40,10 @@ pub enum Status {
 #[derive(Debug)]
 pub enum Command {
     Toggle,
+    /// Use this model (downloads it first if needed).
+    SelectModel(String),
+    DeleteModel(String),
+    CancelDownload,
     Quit,
 }
 
@@ -60,6 +67,9 @@ pub struct App {
     stopping: Option<JoinHandle<()>>,
     audio_err_tx: mpsc::UnboundedSender<String>,
     audio_err_rx: mpsc::UnboundedReceiver<String>,
+    models: ModelManager,
+    /// When to unload the model (set after a session ends).
+    unload_at: Option<Instant>,
 }
 
 impl App {
@@ -69,6 +79,7 @@ impl App {
         level: Level,
         status: watch::Sender<Status>,
         notifier: Notifier,
+        models: ModelManager,
     ) -> Self {
         let (audio_err_tx, audio_err_rx) = mpsc::unbounded_channel();
         Self {
@@ -83,6 +94,8 @@ impl App {
             stopping: None,
             audio_err_tx,
             audio_err_rx,
+            models,
+            unload_at: None,
         }
     }
 
@@ -93,13 +106,40 @@ impl App {
         mut hotkey: mpsc::UnboundedReceiver<HotkeyEvent>,
         mut asr_out: mpsc::UnboundedReceiver<AsrOutput>,
         mut output_events: mpsc::UnboundedReceiver<OutputEvent>,
+        mut model_events: mpsc::UnboundedReceiver<ModelEvent>,
     ) {
+        if !self.models.active_installed() && self.models.downloading().is_none() {
+            // Until the first-run window exists (stage 4): fetch the model right away.
+            self.models.start_download(self.models.active());
+        }
         loop {
+            let unload_at = self.unload_at;
             tokio::select! {
                 cmd = commands.recv() => match cmd {
                     Some(Command::Toggle) => self.toggle().await,
+                    Some(Command::SelectModel(id)) => {
+                        let outcome = self.models.select(&id);
+                        self.apply(outcome);
+                    }
+                    Some(Command::DeleteModel(id)) => {
+                        if let Err(e) = self.models.delete(&id).await {
+                            warn!(error = %e, "could not delete model");
+                        }
+                    }
+                    Some(Command::CancelDownload) => self.models.cancel(),
                     Some(Command::Quit) | None => break,
                 },
+                Some(ev) = model_events.recv() => {
+                    let outcome = self.models.on_event(ev);
+                    self.apply(outcome);
+                }
+                () = async { if let Some(t) = unload_at { tokio::time::sleep_until(t).await } }, if unload_at.is_some() => {
+                    self.unload_at = None;
+                    if self.state == State::Idle {
+                        info!("unloading the model after being idle");
+                        self.asr.send(AsrInput::Unload);
+                    }
+                }
                 Some(ev) = hotkey.recv() => match ev {
                     HotkeyEvent::Toggle => self.toggle().await,
                     HotkeyEvent::Lost(why) => {
@@ -165,7 +205,37 @@ impl App {
         }
     }
 
+    fn apply(&mut self, outcome: Outcome) {
+        match outcome {
+            Outcome::None => {}
+            Outcome::Switch(spec) => {
+                self.asr.send(AsrInput::SetModel(spec));
+                if matches!(*self.status.borrow(), Status::Error(_)) && self.state == State::Idle {
+                    self.set_status(Status::Idle);
+                }
+            }
+            Outcome::Failed(why) => {
+                self.notifier.error("murmur: model download failed", &why);
+                self.set_status(Status::Error(format!("Model download failed: {why}")));
+            }
+        }
+    }
+
     async fn start(&mut self) {
+        if !self.models.active_installed() {
+            let model = self.models.active();
+            let why = if self.models.downloading() == Some(model.id) {
+                format!("{} is still downloading", model.name)
+            } else {
+                self.models.start_download(model);
+                format!("{} isn't downloaded yet; downloading now", model.name)
+            };
+            info!(%why, "can't start dictation");
+            self.set_status(Status::Error(why.clone()));
+            self.notifier.error("murmur: no speech model yet", &why);
+            return;
+        }
+        self.unload_at = None;
         // A previous stop must have delivered its End before the next Begin.
         if let Some(h) = self.stopping.take() {
             let _ = h.await;
@@ -243,6 +313,11 @@ impl App {
             AsrOutput::Finished(id) => {
                 if self.state == State::Finishing && id == self.session {
                     self.state = State::Idle;
+                    let mins = self.models.config().idle_unload_minutes;
+                    if mins > 0 {
+                        self.unload_at =
+                            Some(Instant::now() + Duration::from_secs(u64::from(mins) * 60));
+                    }
                     if !matches!(*self.status.borrow(), Status::Error(_)) {
                         self.set_status(Status::Idle);
                     }

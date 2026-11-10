@@ -9,11 +9,22 @@ use std::time::{Duration, Instant};
 use murmur::{
     asr::{
         engine::{EngineConfig, RecheckEngine, SAMPLE_RATE, Transcriber},
+        moonshine::Moonshine,
         parakeet::Parakeet,
     },
+    models::{self, Kind},
     paths,
     vad::SileroVad,
 };
+
+fn transcriber(id: &str, threads: i32) -> anyhow::Result<Box<dyn Transcriber + Send>> {
+    let m = models::find(id).ok_or_else(|| anyhow::anyhow!("unknown model {id}"))?;
+    let dir = m.dir(&paths::models_dir().ok_or_else(|| anyhow::anyhow!("no data dir"))?);
+    Ok(match m.kind {
+        Kind::Parakeet => Box::new(Parakeet::load(&dir, threads)?),
+        Kind::Moonshine => Box::new(Moonshine::load(&dir, threads)?),
+    })
+}
 
 fn load_wav(path: &str) -> anyhow::Result<Vec<f32>> {
     let mut r = hound::WavReader::open(path)?;
@@ -46,6 +57,10 @@ struct Timed<T> {
 }
 
 impl<T: Transcriber> Transcriber for Timed<T> {
+    fn has_timestamps(&self) -> bool {
+        self.inner.has_timestamps()
+    }
+
     fn transcribe(
         &mut self,
         samples: &[f32],
@@ -75,6 +90,7 @@ fn main() -> anyhow::Result<()> {
     let mut gap = 1.5f64;
     let mut agc_on = false;
     let mut dump = false;
+    let mut model = models::DEFAULT_MODEL.to_owned();
     let mut cfg = EngineConfig::default();
     let mut threads = 4;
     let mut files = Vec::new();
@@ -83,6 +99,7 @@ fn main() -> anyhow::Result<()> {
         match a.as_str() {
             "--agc" => agc_on = true,
             "--dump" => dump = true,
+            "--model" => model = args.next().unwrap_or(model),
             "--gap" => gap = args.next().and_then(|s| s.parse().ok()).unwrap_or(gap),
             "--min-age" => {
                 cfg.min_age = args
@@ -111,10 +128,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     let t = Instant::now();
-    let parakeet = Parakeet::load(
-        &models.join("sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"),
-        threads,
-    )?;
+    let parakeet = transcriber(&model, threads)?;
     let vad = SileroVad::load(&models.join("silero_vad.onnx"), 0.8)?;
     println!(
         "load {:?}; audio {:.1}s; {cfg:?}",
@@ -171,10 +185,7 @@ fn main() -> anyhow::Result<()> {
     );
 
     // Reference: whole-file transcription of each input on its own.
-    let mut whole = Parakeet::load(
-        &models.join("sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"),
-        threads,
-    )?;
+    let mut whole = transcriber(&model, threads)?;
     let mut reference = String::new();
     for f in &files {
         for w in whole.transcribe(&load_wav(f)?)? {

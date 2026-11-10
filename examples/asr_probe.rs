@@ -12,11 +12,17 @@ fn main() -> anyhow::Result<()> {
     let threads: i32 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(4);
 
     let mut config = OfflineRecognizerConfig::default();
-    config.model_config.transducer.encoder = Some(format!("{dir}/encoder.int8.onnx"));
-    config.model_config.transducer.decoder = Some(format!("{dir}/decoder.int8.onnx"));
-    config.model_config.transducer.joiner = Some(format!("{dir}/joiner.int8.onnx"));
+    if dir.contains("moonshine") {
+        config.model_config.moonshine.encoder = Some(format!("{dir}/encoder_model.ort"));
+        config.model_config.moonshine.merged_decoder =
+            Some(format!("{dir}/decoder_model_merged.ort"));
+    } else {
+        config.model_config.transducer.encoder = Some(format!("{dir}/encoder.int8.onnx"));
+        config.model_config.transducer.decoder = Some(format!("{dir}/decoder.int8.onnx"));
+        config.model_config.transducer.joiner = Some(format!("{dir}/joiner.int8.onnx"));
+        config.model_config.model_type = Some("nemo_transducer".into());
+    }
     config.model_config.tokens = Some(format!("{dir}/tokens.txt"));
-    config.model_config.model_type = Some("nemo_transducer".into());
     config.model_config.num_threads = threads;
     config.decoding_method = Some("greedy_search".into());
 

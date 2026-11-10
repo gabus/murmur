@@ -125,6 +125,78 @@ impl Committer {
     }
 }
 
+/// Committer for models without timestamps (Moonshine). Words are aligned by
+/// their position since the current audio buffer started: the engine never
+/// trims mid-buffer for these models, so committed words stay a prefix of
+/// every hypothesis. The hypothesis' last word is never committed early,
+/// because models revise the word at the edge of the audio.
+#[derive(Debug, Default)]
+pub struct SeqCommitter {
+    /// Normalised words committed since the current buffer started.
+    in_buffer: Vec<String>,
+    pending: Vec<Word>,
+}
+
+impl SeqCommitter {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Feeds a new full hypothesis of the current buffer; returns final words.
+    pub fn insert(&mut self, hypothesis: Vec<Word>) -> Vec<Word> {
+        let new = self.uncommitted_part(hypothesis);
+        let limit = new.len().saturating_sub(1);
+        let agreed = self
+            .pending
+            .iter()
+            .zip(&new[..limit])
+            .take_while(|(a, b)| a.text == b.text)
+            .count();
+        let committed: Vec<Word> = new[..agreed].to_vec();
+        self.pending = new[agreed..].to_vec();
+        self.in_buffer
+            .extend(committed.iter().map(|w| norm(&w.text)));
+        committed
+    }
+
+    /// Commits everything new in a final hypothesis of the current buffer.
+    pub fn flush(&mut self, hypothesis: Vec<Word>) -> Vec<Word> {
+        let committed = self.uncommitted_part(hypothesis);
+        self.pending.clear();
+        self.in_buffer
+            .extend(committed.iter().map(|w| norm(&w.text)));
+        committed
+    }
+
+    /// The audio buffer was cleared (phrase ended): alignment restarts.
+    pub fn new_buffer(&mut self) {
+        self.in_buffer.clear();
+        self.pending.clear();
+    }
+
+    fn uncommitted_part(&self, hyp: Vec<Word>) -> Vec<Word> {
+        let k = self.in_buffer.len();
+        if k == 0 {
+            return hyp;
+        }
+        let hn: Vec<String> = hyp.iter().map(|w| norm(&w.text)).collect();
+        if hn.len() >= k && hn[..k] == self.in_buffer[..] {
+            return hyp[k..].to_vec();
+        }
+        // An earlier word changed: re-anchor on the committed tail, nearest to k.
+        for n in (1..=k.min(TAIL).min(hn.len())).rev() {
+            let tail = &self.in_buffer[k - n..];
+            let best = (0..=hn.len() - n)
+                .filter(|&j| hn[j..j + n] == *tail)
+                .min_by_key(|&j| (j + n).abs_diff(k));
+            if let Some(j) = best {
+                return hyp[j + n..].to_vec();
+            }
+        }
+        hyp.into_iter().skip(k).collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,6 +226,49 @@ mod tests {
 
     fn texts(w: &[Word]) -> Vec<&str> {
         w.iter().map(|w| w.text.as_str()).collect()
+    }
+
+    fn words(text: &str) -> Vec<Word> {
+        text.split_whitespace()
+            .map(|w| Word {
+                text: w.to_owned(),
+                start: 0.0,
+                end: 0.08,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn seq_commits_agreed_prefix_but_holds_the_edge_word() {
+        let mut c = SeqCommitter::new();
+        assert!(c.insert(words("Ask not what your career")).is_empty());
+        let out = c.insert(words("Ask not what your country can"));
+        assert_eq!(texts(&out), ["Ask", "not", "what", "your"]);
+        let out = c.insert(words("Ask not what your country can do"));
+        assert_eq!(texts(&out), ["country", "can"]);
+        let out = c.flush(words("Ask not what your country can do for you."));
+        assert_eq!(texts(&out), ["do", "for", "you."]);
+        c.new_buffer();
+        assert_eq!(texts(&c.flush(words("Next phrase."))), ["Next", "phrase."]);
+    }
+
+    #[test]
+    fn seq_reanchors_when_an_earlier_word_changes() {
+        let mut c = SeqCommitter::new();
+        c.insert(words("I think that that is"));
+        c.insert(words("I think that that is fine")); // commits up to "is"
+        // the model now drops one "that": re-anchor on "that is"
+        let out = c.flush(words("I think that is fine, because"));
+        assert_eq!(texts(&out), ["fine,", "because"]);
+    }
+
+    #[test]
+    fn seq_case_and_punctuation_changes_in_committed_words_are_ignored() {
+        let mut c = SeqCommitter::new();
+        c.insert(words("so we go"));
+        c.insert(words("so we go now")); // commits "so we go"
+        let out = c.flush(words("So, we go now."));
+        assert_eq!(texts(&out), ["now."]);
     }
 
     #[test]

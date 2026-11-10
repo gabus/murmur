@@ -9,6 +9,8 @@ use tracing::{info, warn};
 use crate::{
     app::{Command, Status},
     icons::{self, Look},
+    model_manager::ModelsView,
+    models::MODELS,
 };
 
 /// Show the loading animation only if loading takes longer than this (spec).
@@ -27,6 +29,7 @@ enum Shown {
 
 struct MurmurTray {
     shown: Shown,
+    models: ModelsView,
     /// Human-readable shortcut, e.g. "Meta+H".
     shortcut: Option<String>,
     commands: mpsc::UnboundedSender<Command>,
@@ -115,6 +118,21 @@ impl ksni::Tray for MurmurTray {
             Shown::Loading(_) => "Loading the speech model… (already recording)".into(),
             Shown::Error(e) => e.clone(),
         };
+        let description = match &self.models.download {
+            Some(d) => {
+                let name = MODELS
+                    .iter()
+                    .find(|m| m.id == d.model)
+                    .map_or(d.model, |m| m.name);
+                let what = if d.unpacking {
+                    "unpacking".to_owned()
+                } else {
+                    format!("{}%", d.percent)
+                };
+                format!("{description}\nDownloading {name}… {what}")
+            }
+            None => description,
+        };
         ksni::ToolTip {
             title: "murmur".into(),
             description,
@@ -127,12 +145,87 @@ impl ksni::Tray for MurmurTray {
     }
 
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
-        use ksni::menu::StandardItem;
+        use ksni::menu::{RadioGroup, RadioItem, StandardItem, SubMenu};
         let label = if self.listening() {
             "Stop dictation"
         } else {
             "Start dictation"
         };
+        let mv = &self.models;
+        let options = MODELS
+            .iter()
+            .map(|m| {
+                let mut label = format!("{} — {}", m.name, m.summary);
+                match &mv.download {
+                    Some(d) if d.model == m.id && d.unpacking => label.push_str("  (unpacking…)"),
+                    Some(d) if d.model == m.id => {
+                        label.push_str(&format!("  (downloading {}%)", d.percent));
+                    }
+                    _ if !mv.installed.contains(&m.id) => {
+                        label.push_str(&format!("  ({} download)", m.size_label()));
+                    }
+                    _ => {}
+                }
+                RadioItem {
+                    label,
+                    ..Default::default()
+                }
+            })
+            .collect();
+        let selected = MODELS.iter().position(|m| m.id == mv.active).unwrap_or(0);
+        let mut model_menu: Vec<ksni::MenuItem<Self>> = vec![
+            RadioGroup {
+                selected,
+                select: Box::new(|t: &mut Self, i| {
+                    if let Some(m) = MODELS.get(i) {
+                        let _ = t.commands.send(Command::SelectModel(m.id.to_owned()));
+                    }
+                }),
+                options,
+            }
+            .into(),
+        ];
+        if mv.download.is_some() {
+            model_menu.push(
+                StandardItem {
+                    label: "Cancel download".into(),
+                    icon_name: "process-stop".into(),
+                    activate: Box::new(|t: &mut Self| {
+                        let _ = t.commands.send(Command::CancelDownload);
+                    }),
+                    ..Default::default()
+                }
+                .into(),
+            );
+        }
+        let deletable: Vec<ksni::MenuItem<Self>> = MODELS
+            .iter()
+            .filter(|m| mv.installed.contains(&m.id) && m.id != mv.active)
+            .map(|m| {
+                let id = m.id;
+                StandardItem {
+                    label: format!("{} ({})", m.name, m.size_label()),
+                    icon_name: "edit-delete".into(),
+                    activate: Box::new(move |t: &mut Self| {
+                        let _ = t.commands.send(Command::DeleteModel(id.to_owned()));
+                    }),
+                    ..Default::default()
+                }
+                .into()
+            })
+            .collect();
+        if !deletable.is_empty() {
+            model_menu.push(ksni::MenuItem::Separator);
+            model_menu.push(
+                SubMenu {
+                    label: "Delete downloaded model".into(),
+                    icon_name: "edit-delete".into(),
+                    submenu: deletable,
+                    ..Default::default()
+                }
+                .into(),
+            );
+        }
         vec![
             StandardItem {
                 label: label.into(),
@@ -140,6 +233,12 @@ impl ksni::Tray for MurmurTray {
                 activate: Box::new(|t: &mut Self| {
                     let _ = t.commands.send(Command::Toggle);
                 }),
+                ..Default::default()
+            }
+            .into(),
+            SubMenu {
+                label: "Model".into(),
+                submenu: model_menu,
                 ..Default::default()
             }
             .into(),
@@ -168,11 +267,13 @@ impl ksni::Tray for MurmurTray {
 pub async fn run(
     mut status: watch::Receiver<Status>,
     mut level: watch::Receiver<u8>,
+    mut models: watch::Receiver<ModelsView>,
     commands: mpsc::UnboundedSender<Command>,
     shortcut: Option<String>,
 ) {
     let mut tray = MurmurTray {
         shown: Shown::Idle,
+        models: models.borrow_and_update().clone(),
         shortcut,
         commands,
         cache: HashMap::new(),
@@ -234,6 +335,13 @@ pub async fn run(
                         }
                     })
                     .await;
+            }
+            changed = models.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                let v = models.borrow_and_update().clone();
+                handle.update(|t| t.models = v).await;
             }
             () = anim => {
                 phase = phase.wrapping_add(1);
