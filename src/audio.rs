@@ -5,12 +5,9 @@
 //! closes the device.
 
 use std::{
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicU32, Ordering},
-        mpsc,
-    },
+    sync::{Arc, Mutex, mpsc},
     thread::JoinHandle,
+    time::{Duration, Instant},
 };
 
 use cpal::{
@@ -18,6 +15,7 @@ use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
 };
 use sherpa_onnx::LinearResampler;
+use tokio::sync::watch;
 use tracing::{info, warn};
 
 pub const SAMPLE_RATE: u32 = 16_000;
@@ -43,16 +41,55 @@ pub type Sink = Box<dyn FnMut(Vec<f32>) + Send + 'static>;
 /// e.g. the device was unplugged.
 pub type OnError = Box<dyn Fn(String) + Send + Sync + 'static>;
 
-/// Current input level (RMS of the last chunk, f32 bits) for the tray icon.
-#[derive(Debug, Clone, Default)]
-pub struct Level(Arc<AtomicU32>);
+/// Voice-level step (0..icons::LEVELS) for the tray icon, pushed from the audio
+/// thread at most every `LEVEL_INTERVAL` and only when it changes.
+#[derive(Debug, Clone)]
+pub struct Level {
+    tx: Arc<watch::Sender<u8>>,
+    last: Arc<Mutex<Option<Instant>>>,
+}
+
+const LEVEL_INTERVAL: Duration = Duration::from_millis(100);
+
+impl Default for Level {
+    fn default() -> Self {
+        Self::new().0
+    }
+}
 
 impl Level {
-    pub fn get(&self) -> f32 {
-        f32::from_bits(self.0.load(Ordering::Relaxed))
+    pub fn new() -> (Self, watch::Receiver<u8>) {
+        let (tx, rx) = watch::channel(0);
+        (
+            Self {
+                tx: Arc::new(tx),
+                last: Arc::new(Mutex::new(None)),
+            },
+            rx,
+        )
     }
-    pub(crate) fn set(&self, v: f32) {
-        self.0.store(v.to_bits(), Ordering::Relaxed);
+
+    /// Records the RMS of a chunk (0..1).
+    pub(crate) fn set(&self, rms: f32) {
+        let step = crate::icons::level_step(rms);
+        let now = Instant::now();
+        if let Ok(mut last) = self.last.lock() {
+            if last.is_some_and(|t| now.duration_since(t) < LEVEL_INTERVAL) {
+                return;
+            }
+            *last = Some(now);
+        }
+        self.tx.send_if_modified(|cur| {
+            let changed = *cur != step;
+            *cur = step;
+            changed
+        });
+    }
+
+    /// Back to silence (when listening stops).
+    pub fn reset(&self) {
+        self.tx
+            .send_if_modified(|cur| std::mem::replace(cur, 0) != 0);
     }
 }
 

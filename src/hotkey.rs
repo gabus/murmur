@@ -31,6 +31,7 @@ pub enum HotkeyError {
 
 pub struct Hotkey {
     task: JoinHandle<()>,
+    trigger: Option<String>,
 }
 
 impl Drop for Hotkey {
@@ -40,6 +41,11 @@ impl Drop for Hotkey {
 }
 
 impl Hotkey {
+    /// The key combination the user bound, as the desktop describes it (e.g. "Meta+H").
+    pub fn trigger(&self) -> Option<&str> {
+        self.trigger.as_deref()
+    }
+
     /// Binds the toggle shortcut (the desktop asks the user once) and forwards activations.
     pub async fn start(events: UnboundedSender<HotkeyEvent>) -> Result<Self, HotkeyError> {
         let portal = GlobalShortcuts::new().await?;
@@ -52,12 +58,16 @@ impl Hotkey {
             .bind_shortcuts(&session, &[shortcut], None, BindShortcutsOptions::default())
             .await?
             .response()?;
+        let mut trigger = None;
         for s in bound.shortcuts() {
             info!(
                 id = s.id(),
                 trigger = s.trigger_description(),
                 "shortcut bound"
             );
+            if s.id() == SHORTCUT_ID && !s.trigger_description().is_empty() {
+                trigger = Some(s.trigger_description().to_owned());
+            }
         }
         let mut activated = portal.receive_activated().await?;
         let task = tokio::spawn(async move {
@@ -99,6 +109,6 @@ impl Hotkey {
                 }
             }
         });
-        Ok(Self { task })
+        Ok(Self { task, trigger })
     }
 }

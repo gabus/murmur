@@ -7,7 +7,10 @@ pub mod audio;
 #[cfg(feature = "dev-harness")]
 pub mod dev;
 pub mod hotkey;
+pub mod icons;
+pub mod notify;
 pub mod output;
 pub mod paths;
 pub mod portal;
+pub mod tray;
 pub mod vad;

@@ -7,11 +7,12 @@ use murmur::{
     },
     audio::Level,
     hotkey::Hotkey,
+    notify::Notifier,
     output::{EisSource, Output},
     paths,
 };
 use tokio::sync::{mpsc, watch};
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 /// Stage 1: hard-coded default model (the model registry comes in stage 3).
@@ -70,12 +71,20 @@ async fn run() -> Result<()> {
     let (hk_tx, hk_rx) = mpsc::unbounded_channel();
     let use_hotkey =
         !cfg!(feature = "dev-harness") || std::env::var_os("MURMUR_DEV_NO_HOTKEY").is_none();
+    let notifier = Notifier::spawn();
     let _hotkey = if use_hotkey {
-        Some(
-            Hotkey::start(hk_tx)
-                .await
-                .context("binding the global shortcut")?,
-        )
+        match Hotkey::start(hk_tx).await {
+            Ok(h) => Some(h),
+            Err(e) => {
+                // Still usable: clicking the tray icon toggles dictation.
+                warn!(error = %e, "global shortcut unavailable");
+                notifier.error(
+                    "murmur: no global shortcut",
+                    "This desktop didn't provide a shortcut. Click the tray icon to dictate.",
+                );
+                None
+            }
+        }
     } else {
         None
     };
@@ -92,18 +101,29 @@ async fn run() -> Result<()> {
         });
     }
     let (status_tx, mut status_rx) = watch::channel(Status::Idle);
+    let (level, level_rx) = Level::new();
+    let tray_status = status_rx.clone();
     tokio::spawn(async move {
         while status_rx.changed().await.is_ok() {
             info!(status = ?*status_rx.borrow(), "status");
         }
     });
+    let shortcut = _hotkey
+        .as_ref()
+        .and_then(|h| h.trigger().map(str::to_owned));
+    tokio::spawn(murmur::tray::run(
+        tray_status,
+        level_rx,
+        cmd_tx.clone(),
+        shortcut,
+    ));
     tokio::spawn(async move {
         let _ = tokio::signal::ctrl_c().await;
         let _ = cmd_tx.send(Command::Quit);
     });
 
     info!("murmur ready — press the shortcut to dictate");
-    App::new(asr, output, Level::default(), status_tx)
+    App::new(asr, output, level, status_tx, notifier)
         .run(cmd_rx, hk_rx, asr_rx, out_rx)
         .await;
     Ok(())

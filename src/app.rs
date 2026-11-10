@@ -12,6 +12,7 @@ use crate::{
     asr::worker::{AsrInput, AsrOutput, AsrWorker, SessionId},
     audio::{Capture, Level},
     hotkey::HotkeyEvent,
+    notify::Notifier,
     output::{Output, OutputEvent},
 };
 
@@ -52,6 +53,7 @@ pub struct App {
     output: Output,
     level: Level,
     status: watch::Sender<Status>,
+    notifier: Notifier,
     state: State,
     session: SessionId,
     capture: Option<Capture>,
@@ -66,6 +68,7 @@ impl App {
         output: Output,
         level: Level,
         status: watch::Sender<Status>,
+        notifier: Notifier,
     ) -> Self {
         let (audio_err_tx, audio_err_rx) = mpsc::unbounded_channel();
         Self {
@@ -73,6 +76,7 @@ impl App {
             output,
             level,
             status,
+            notifier,
             state: State::Idle,
             session: 0,
             capture: None,
@@ -101,6 +105,10 @@ impl App {
                     HotkeyEvent::Lost(why) => {
                         warn!(%why, "global shortcut lost");
                         self.set_status(Status::Error("Shortcut unavailable".into()));
+                        self.notifier.error(
+                            "murmur: shortcut unavailable",
+                            "The global shortcut stopped working. Click the tray icon to dictate, or restart murmur.",
+                        );
                     }
                 },
                 Some(out) = asr_out.recv() => self.on_asr(out).await,
@@ -109,6 +117,7 @@ impl App {
                     if self.state == State::Listening {
                         error!(%why, "microphone failed while listening");
                         self.set_status(Status::Error(format!("Microphone error: {why}")));
+                        self.notifier.error("murmur: microphone lost", &why);
                         self.stop().await;
                     }
                 }
@@ -192,12 +201,14 @@ impl App {
         error!(error = %failure, "cannot open microphone");
         self.asr.send(AsrInput::End);
         self.state = State::Finishing;
+        self.notifier.error("murmur: no microphone", &failure);
         self.set_status(Status::Error(failure));
     }
 
     async fn stop(&mut self) {
         info!("stopping");
         self.state = State::Finishing;
+        self.level.reset();
         let capture = self.capture.take();
         let asr = self.asr.sender();
         self.stopping = Some(tokio::spawn(async move {
@@ -221,6 +232,8 @@ impl App {
             AsrOutput::LoadFailed(e) => {
                 error!(error = %e, "speech model unavailable");
                 self.set_status(Status::Error(format!("Speech model unavailable: {e}")));
+                self.notifier
+                    .error("murmur: speech model missing", &format!("{e}"));
                 if self.state == State::Listening {
                     // Don't keep the mic open for nothing.
                     self.stop().await;
@@ -247,10 +260,15 @@ impl App {
             OutputEvent::Ready => info!("typing ready"),
             OutputEvent::PermissionDenied => {
                 self.set_status(Status::Error("Typing permission denied".into()));
+                self.notifier.error(
+                    "murmur can't type",
+                    "Permission to type was denied. Dictate again to be asked once more.",
+                );
             }
             OutputEvent::Disconnected(why) => warn!(%why, "typing session lost"),
             OutputEvent::Unavailable(why) => {
                 self.set_status(Status::Error(format!("Typing unavailable: {why}")));
+                self.notifier.error("murmur can't type", &why);
             }
             OutputEvent::Unmapped { count } => {
                 warn!(
