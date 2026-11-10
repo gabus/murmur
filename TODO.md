@@ -84,7 +84,7 @@ Goal: `murmur` daemon, hotkey toggles listening, phrases get typed.
 - [ ] AppStream metainfo, `.desktop` file, icons (scalable + 128px)
 - [ ] Minimal permissions (see README); no `--device=all`, no `--filesystem=host`
 - [ ] CI: GitHub Actions building the Flatpak bundle on push
-- [ ] License chosen and added
+- [x] License chosen and added (GPL-3.0-or-later, D-013)
 
 ## Stage 6: Release
 

@@ -113,3 +113,9 @@ restored.**
 - Shortcut: Ctrl+V, or Ctrl+Shift+V via `paste_keys`. Ctrl is pressed only after the
   held-modifier check passes, and released in the same burst.
 - Not yet verified against a real Clipboard portal (KDE/GNOME); see `docs/portal-findings.md`.
+
+### D-013 · 2026-11-10 · maintainer. Resolves D-003
+**License: GPL-3.0-or-later.**
+- Why: the maintainer's choice. Copyleft keeps forks open. Slint is then used under its
+  GPLv3 terms, so no attribution badge is needed.
+- Spec: README → License; `LICENSE`; Cargo `license`; AppStream `project_license`.

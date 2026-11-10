@@ -259,4 +259,6 @@ See [TODO.md](TODO.md).
 
 ## License
 
-TBD
+GPL-3.0-or-later ([LICENSE](LICENSE), [D-013](docs/decisions.md)). The speech models are
+downloaded separately and carry their own licenses (Parakeet: CC-BY-4.0; Moonshine English:
+MIT; Zipformer/punctuation: Apache-2.0).
