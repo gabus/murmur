@@ -55,7 +55,8 @@ verified and where, and what is still open before a Flathub submission. Build co
 
 Tested with `org.flatpak.Builder` 1.4.12, freedesktop SDK 26.08 (GCC 16), rust-stable.
 
-**Build times**, cold (fresh state dir, no ccache, `--sandbox`):
+**Build times**, cold (fresh state dir, no ccache, `--sandbox`), measured before the Slint
+windows landed:
 
 | Step | Time |
 |---|---|
@@ -65,11 +66,12 @@ Tested with `org.flatpak.Builder` 1.4.12, freedesktop SDK 26.08 (GCC 16), rust-s
 | `murmur` (`cargo build --release`) | 42 s |
 | Total | 10 min 26 s |
 
-With the module cache, a change to murmur only rebuilds `murmur` (about 40 s). After a change
-to the ORT module, `--ccache` brings ORT down to about 1.5 min.
+With Slint (652 crates) the `murmur` module takes 75 s. With the module cache, a change to murmur
+only rebuilds that module. After a change to the ORT module, `--ccache` brings ORT down to
+about 1.5 min.
 
 **Output:** `libonnxruntime.so.1.28.3` (27 MB), `libsherpa-onnx-c-api.so` (3.6 MB),
-`/app/bin/murmur` (15 MB). `murmur` needs `libsherpa-onnx-c-api.so` (no rpath; `/app/lib` is
+`/app/bin/murmur` (33 MB with Slint). `murmur` needs `libsherpa-onnx-c-api.so` (no rpath; `/app/lib` is
 on the sandbox's library path), which needs `libonnxruntime.so.1` (rpath `$ORIGIN`). `ldd` in
 the sandbox resolves both to `/app/lib`. License files for murmur, ORT (+ ThirdPartyNotices) and
 sherpa-onnx with each bundled library are in `/app/share/licenses/io.github.gabus.Murmur/`.
@@ -84,12 +86,17 @@ but run on a private `dbus-daemon` with no service activation and `WAYLAND_DISPL
 unset, so no portals, no tray host and nothing can be typed):
 
 - Starts (`murmur ready`). Expected warnings: no tray watcher, no GlobalShortcuts portal, no
-  RemoteDesktop portal, setup window can't open (no UI in this build yet). cpal's PulseAudio
-  host still fails in the sandbox and falls back to ALSA (known, TODO Stage 4).
+  RemoteDesktop portal, and without a display the setup window process exits ("neither
+  WAYLAND_DISPLAY nor ... is set"). cpal's PulseAudio host still fails in the sandbox and falls
+  back to ALSA (known, TODO Stage 4).
 - `Toggle` over D-Bus: mic opens (ALSA), Parakeet v3 loads through the source-built
   sherpa-onnx + ORT 1.28.3 in 1.6 s, status Listening. Second `Toggle`: Idle.
 - SIGINT to the sandboxed `murmur` process: `shutting down`, exit code 0. (A signal to the
   `flatpak run` process kills bwrap instead, which isn't a test of murmur.)
+- Same run with an invisible nested KWin (`kwin_wayland --virtual`, on the private bus) as the
+  sandbox's `WAYLAND_DISPLAY`: the Slint setup window process starts, stays up without errors
+  and closes on shutdown. Only warning: no a11y bus on the private bus. Rendering wasn't
+  checked visually.
 
 Not tested: aarch64, the CI workflow (written, not run), GNOME.
 
@@ -115,4 +122,4 @@ Not tested: aarch64, the CI workflow (written, not run), GNOME.
 - **Build time on Flathub builders** is dominated by ORT; acceptable for Flathub, but every
   ORT bump means re-checking the mirror list (see *Bumping versions*).
 - **Dependency drift.** `cargo-sources.json` must be regenerated after every `Cargo.lock`
-  change (e.g. when Slint lands), or the offline build fails.
+  change (Slint alone added 341 crates), or the offline build fails.
