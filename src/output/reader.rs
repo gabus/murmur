@@ -114,3 +114,72 @@ impl EiSocket {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{io::Write, time::Duration};
+
+    use super::*;
+
+    /// `ei_handshake.handshake_version(1)`: object 0, length 20, opcode 0, then the version.
+    fn handshake_version() -> Vec<u8> {
+        [
+            0u64.to_ne_bytes().as_slice(),
+            &20u32.to_ne_bytes(),
+            &0u32.to_ne_bytes(),
+            &1u32.to_ne_bytes(),
+        ]
+        .concat()
+    }
+
+    fn is_handshake_version(event: &RawEvent) -> bool {
+        matches!(
+            event,
+            Some(Ok(PendingRequestResult::Request(ei::Event::Handshake(
+                _,
+                ei::handshake::Event::HandshakeVersion { version: 1 }
+            ))))
+        )
+    }
+
+    // reis 0.7.1's tokio stream fails this: its first read finds half a message, clears
+    // readiness and returns Pending without re-arming, so the second half, arriving while the
+    // same `next()` is pending, doesn't wake it. (Measured: it returned only when the 3 s
+    // timeout's timer re-polled it, which is also why periodic `sync` pokes "fixed" setup.)
+    #[tokio::test]
+    async fn message_split_across_writes_wakes_the_reader() {
+        let (client, mut server) = UnixStream::pair().expect("socketpair");
+        let socket = EiSocket::new(client).expect("EI socket");
+        let writer = std::thread::spawn(move || {
+            let msg = handshake_version();
+            server.write_all(&msg[..10]).expect("write first half");
+            std::thread::sleep(Duration::from_millis(100));
+            server.write_all(&msg[10..]).expect("write second half");
+            server
+        });
+        let start = std::time::Instant::now();
+        let event = tokio::time::timeout(Duration::from_secs(3), socket.next())
+            .await
+            .expect("reader woken by the rest of the message");
+        let waited = start.elapsed();
+        let _server = writer.join().expect("writer thread");
+        assert!(is_handshake_version(&event), "got {event:?}");
+        assert!(
+            waited < Duration::from_secs(1),
+            "woken only after {waited:?}: lost wakeup"
+        );
+    }
+
+    #[tokio::test]
+    async fn buffered_events_come_before_end_of_stream() {
+        let (client, mut server) = UnixStream::pair().expect("socketpair");
+        let socket = EiSocket::new(client).expect("EI socket");
+        server
+            .write_all(&[handshake_version(), handshake_version()].concat())
+            .expect("write");
+        drop(server);
+        assert!(is_handshake_version(&socket.next().await));
+        assert!(is_handshake_version(&socket.next().await));
+        assert!(socket.next().await.is_none(), "end of stream");
+    }
+}
