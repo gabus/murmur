@@ -164,3 +164,14 @@ and the README title.
   symbolic icon `io.github.gabus.Murmur-symbolic` when idle (recoloured by the panel); the
   pixmaps drawn in `src/icons.rs` cover listening (red, and the wave grows with the voice
   level), loading and error.
+
+### D-018 · 2026-11-10 · maintainer
+**The store description (AppStream metainfo) lists "What a distro must have" and what is "Not
+supported yet"**, so people can see before installing whether Murmur works on their system.
+- Requirements: Wayland, Plasma 6.1+ or GNOME 48+, xdg-desktop-portal with the KDE/GNOME
+  backend, PipeWire or PulseAudio, x86_64, and on GNOME the AppIndicator extension for the
+  tray. Not supported yet: X11, Sway/wlroots, Hyprland (untested), ARM.
+- Only real constraints are listed. RAM and network access are left out, because every machine
+  has them.
+- When a desktop or architecture changes status in README → Supported desktops, update
+  `data/io.github.gabus.Murmur.metainfo.xml` in the same change.

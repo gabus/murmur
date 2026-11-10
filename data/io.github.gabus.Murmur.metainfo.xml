@@ -26,10 +26,22 @@
       <li>A tray icon shows when it is listening, and the microphone is open only while dictating</li>
       <li>The speech model is loaded on demand and freed again when idle</li>
     </ul>
-    <p>
-      Murmur needs a Wayland desktop with the GlobalShortcuts and RemoteDesktop portals, such as
-      KDE Plasma 6.1 or later, or GNOME with the AppIndicator extension for the tray icon.
-    </p>
+    <p>What a distro must have:</p>
+    <ul>
+      <li>A Wayland session</li>
+      <li>KDE Plasma 6.1 or later, or GNOME 48 or later</li>
+      <li>xdg-desktop-portal with the KDE or GNOME backend</li>
+      <li>PipeWire or PulseAudio</li>
+      <li>An x86_64 processor</li>
+      <li>On GNOME, the AppIndicator extension for the tray icon (dictation works without it)</li>
+    </ul>
+    <p>Not supported yet:</p>
+    <ul>
+      <li>X11 sessions</li>
+      <li>Sway and other wlroots desktops, which have no global shortcuts portal</li>
+      <li>Hyprland (untested)</li>
+      <li>ARM (aarch64) computers</li>
+    </ul>
   </description>
 
   <launchable type="desktop-id">io.github.gabus.Murmur.desktop</launchable>
