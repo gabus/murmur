@@ -142,3 +142,12 @@ was written with AI assistance.**
   be disclosed and may be rejected, and AI agents must not open submission PRs. Flathub
   remains possible later if the maintainer writes that manifest and submits it personally.
 - Spec: README → Goals (one-click install), Install.
+
+### D-016 · 2026-11-10 · maintainer
+**Suggested shortcut: Super+H, except Super+Alt+H on GNOME.**
+- Why: Super+H matches Windows' dictation key (Win+H) and is free on KDE. On stock GNOME 50,
+  Super+H is "Hide window": GNOME's shortcut dialog accepts it, but it never fires (verified
+  headless, gnome-shell 50.6 + xdg-desktop-portal-gnome 50.0). Super+Alt+H is free on both.
+- GNOME's GlobalShortcuts portal is v1 (no ConfigureShortcuts), so there the shortcut can
+  only be changed in GNOME Settings.
+- Spec: README → First run; Supported desktops.
