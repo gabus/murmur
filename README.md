@@ -266,6 +266,7 @@ bash .claude/skills/murmur-gate/gate.sh   # fmt + clippy -D warnings + tests
 # integration tests in an invisible nested KWin (never touch the real desktop);
 # need the spike test pad: (cd spike && $T cargo build)
 $T cargo test --test output_nested_kwin -- --ignored
+$T cargo test --test portal_nested_kde -- --ignored   # real KDE portal: dialog, token, paste
 $T cargo test --features dev-harness --test e2e_nested_kwin -- --ignored   # needs models
 
 # dev tools

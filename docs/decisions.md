@@ -112,7 +112,8 @@ restored.**
   an `Unmapped` notice.
 - Shortcut: Ctrl+V, or Ctrl+Shift+V via `paste_keys`. Ctrl is pressed only after the
   held-modifier check passes, and released in the same burst.
-- Not yet verified against a real Clipboard portal (KDE/GNOME); see `docs/portal-findings.md`.
+- Verified against KDE's real Clipboard portal in a nested KWin; GNOME not yet. See
+  `docs/portal-findings.md`.
 
 ### D-013 · 2026-11-10 · maintainer. Resolves D-003
 **License: GPL-3.0-or-later.**

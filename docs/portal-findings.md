@@ -128,22 +128,70 @@ the EIS fd with no dialog. libei 1.6.0.
 - Waiting covers locked and latched modifiers, Neo's level 5 and level lock (D-007).
 - A device replaced during a `sync` round-trip is re-probed. A held AltGr at the first word
   (the probe can't see it, because KWin reports changes only) makes text wait.
-- **Not tested against a real portal:** the session `Closed` signal handling, and reading the
-  portal version on errors.
+- The session `Closed` handling was later tested against the real KDE portal (next section).
+  **Still untested:** reading the portal version when the property can't be read (the
+  version-1 fallback path).
 
-## Clipboard paste fallback (D-011/D-012), **untested against a real portal**
+## Real KDE portal in a nested KWin (`tests/portal_nested_kde.rs`, tested)
 
-- `RequestClipboard` goes between `SelectDevices` and `Start`. It's used only if
-  `is_clipboard_enabled()`. KDE 6.7.5's `kde.portal` lists the Clipboard interface.
-- Unit-tested with a fake clipboard and a fake EIS server: paste, then restore; not read in
-  time; can't save the clipboard (no keys pressed); clipboard-manager reads ignored; paste
-  shortcut on us/dvorak/ru.
-- Open questions for a real-session check:
-  - Do existing restore tokens (granted without clipboard) re-prompt or silently omit it?
-  - Is `SelectionOwnerChanged` sent right after `Start`?
-  - Pipe fd types.
-  - Ctrl+V with Caps Lock or a non-Latin layout.
-  - Timing margins (50 ms / 1.5 s).
+The host's **xdg-desktop-portal 1.22.1 (with its xdg-permission-store), xdg-desktop-portal-kde
+6.7.5, KWin 6.7.5** (Fedora 44; wl-clipboard 2.2.1, spectacle 6.7.5 for checks), started on the nested KWin's private bus and display, with murmur's
+`EisSource::Portal` running from the toolbox as a host app. The dialogs appear only in the nested
+KWin and are answered with keys from a second EIS client. **Not covered:** the Flatpak sandbox
+(murmur runs as a host app here), a real Plasma session (no plasmashell, so no tray, no
+Klipper), GNOME.
+
+- Exposed: `RemoteDesktop` version 2 (`AvailableDeviceTypes` = 7) and `Clipboard` version 1.
+- **Dialog** ("Remote Control: murmur is asking for special privileges: • Control input
+  devices"): *Allow restoring on future sessions* is checked by default; buttons Approve and
+  Deny. Return approves, Escape denies (`Start` response 1 → `PermissionDenied`; the portal
+  then emits the session's `Closed`). It opened on top of the test pad and active in the
+  screenshots; the test still activates it through KWin's window runner before pressing a key,
+  so the key can't land in the pad.
+- **The dialog doesn't mention the clipboard.** With `RequestClipboard`, Approve grants it
+  (`clipboard_enabled = true`) without telling the user.
+- **Restore token:** the next session with it is ready in about 15 ms with no dialog. KDE hands
+  back the **same token value** each time.
+- **A token granted without clipboard access re-prompts** (answers the open question): when
+  murmur asks for the clipboard with such a token, KDE shows the dialog again, and after Approve
+  the clipboard is granted and the token value stays the same. Users with a token from before
+  D-011 see the dialog once more.
+- **`SelectionOwnerChanged` is not sent after `Start`**, even when another app owns the
+  clipboard. It arrives when another app copies (`session_is_owner = false` + its mime types)
+  and after murmur's own `SetSelection` (`session_is_owner = true`).
+- `SelectionRead` and `SelectionWrite` both hand out **pipes (FIFOs)**. Reads are answered in
+  about 1 ms; an empty clipboard answers with an empty pipe.
+- **`SelectionRead` for a mime type the owner doesn't offer is never answered** (no D-Bus reply
+  at all; later calls still work). Bug found and fixed in `src/output/clipboard.rs`: murmur
+  waited for the reply without a timeout, so with an image on the clipboard at session start
+  (owner unknown, murmur tries the text types) **every untypeable word stalled 3.0 s** before
+  being typed without the missing characters. The same would happen with an app that offers
+  fewer text types than murmur tries (likely Qt apps: `text/plain` and
+  `text/plain;charset=utf-8` only; **not tested**), where the paste then also fails. Now,
+  with the owner unknown, murmur tries the text types at once and waits at most 300 ms for
+  answers. It keeps the types that answered; if none did, the content can't be restored, so
+  nothing is pasted (D-012) and murmur doesn't ask again until the owner changes (each
+  unanswered call stays pending in the portal). Measured: 0.30 s for the first such word,
+  about 0 s for the next, image kept. Announced types are still read one at a time (1 s each),
+  and one that times out now blocks the paste instead of being dropped from the restore.
+- **Paste works:** `mąstau ` (layout us) pasted exactly, about 110 to 160 ms per pasted word,
+  both with the owner unknown (copied before `Start`) and announced (copied during the
+  session). The previous text clipboard reads back afterwards (served by murmur). When
+  murmur's session ends, KDE clears a selection murmur owned ("Nothing is copied").
+- **Caps Lock + Ctrl+V:** the Slint test pad ignores it (Slint 1.18 matches the shortcut on the
+  key's text, `"V"` with Caps Lock). murmur then falls back as designed: `ia ` typed,
+  `Unmapped { count: 1 }`, clipboard restored. Qt and GTK match the key instead; **not tested**.
+- **Session closed by the user:** the backend shows a "Remote Control" StatusNotifierItem with
+  one menu entry, *End*. Clicking it (dbusmenu `Event clicked`) makes the portal emit `Closed`
+  → murmur reports `Disconnected("the RemoteDesktop session was closed")`. The next word
+  reconnects with the token, with no dialog.
+- **Backend killed:** the frontend emits no `Closed`, but KWin drops the backend's EIS clients →
+  `Disconnected("EIS disconnected …")`. Reconnecting without a backend gets response code 2 →
+  `Unavailable` (in a real session, D-Bus activation would restart the backend instead). With
+  the backend back, `retry` reconnects with the token and no dialog.
+- **Still untested:** Ctrl+V on a non-Latin layout, a clipboard manager (Klipper) reading the
+  offer, timing margins under load (`SETTLE` 50 ms, `PASTE_TIMEOUT` 1.5 s), the version-1
+  fallback, the Flatpak sandbox, GNOME.
 
 ## Automated testing without the user's desktop
 
@@ -151,6 +199,21 @@ the EIS fd with no dialog. libei 1.6.0.
 KWin with its own bus. It exports `org.kde.KWin.EIS.RemoteDesktop.connectToEIS(i caps) → (h fd,
 i cookie)` with no portal and no dialog. A test client on that compositor gets focus and
 receives the typed text. This is the basis for the output integration tests (Stage 1).
+
+The real portal stack runs in the same nested session (`tests/portal_nested_kde.rs`): the
+private bus has no service activation, so the harness starts `xdg-permission-store`,
+`xdg-desktop-portal-kde` and `xdg-desktop-portal` from the host itself (through
+`flatpak-spawn --host --clear-env`, with the nested bus, `WAYLAND_DISPLAY`,
+`XDG_CURRENT_DESKTOP=KDE`, `QT_QPA_PLATFORM=wayland` and private XDG dirs, so permissions and
+tokens stay in the test directory) and waits for their names. It writes the app's desktop
+file into the private `XDG_DATA_HOME` so `Registry.Register` works. Before typing it checks that
+the portal processes' environment names the nested bus and display (the toolbox can't read a
+host process's `/proc/<pid>/environ`, so the harness reads it on the host). Dialogs are found
+and activated through KWin's window runner (`org.kde.KWin /WindowsRunner org.kde.krunner1
+Match/Run`, filtered by the backend's resource class) and answered with Return or Escape from
+a second EIS client. `spectacle -b -n -f -o` on the nested bus and display takes screenshots
+(`MURMUR_SCREENSHOTS`), and `wl-copy`/`wl-paste` from the host work on the nested KWin
+(`ext_data_control_v1`).
 
 ## Audio (cpal 0.18, `pulseaudio` feature: pure-Rust client, no libpulse)
 

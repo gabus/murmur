@@ -62,7 +62,12 @@ const META_TARGETS: [&str; 7] = [
 /// Largest content kept per mime type, and in total, when saving the previous clipboard.
 const MAX_TYPE_BYTES: usize = 8 << 20;
 const MAX_TOTAL_BYTES: usize = 32 << 20;
-/// How long reading one mime type of the previous clipboard may take.
+/// How long the portal may take to answer `SelectionRead` for a guessed type (the owner's types
+/// unknown). xdg-desktop-portal-kde 6.7.5 answers in about 1 ms, but never for a type the owner
+/// doesn't offer (`docs/portal-findings.md`), so no answer means "not offered".
+const PROBE_TIMEOUT: Duration = Duration::from_millis(300);
+/// How long the portal may take to answer `SelectionRead` for an announced type, and how long
+/// reading one mime type of the previous clipboard may take once it answered.
 const READ_TIMEOUT: Duration = Duration::from_secs(1);
 /// How long writing the offered content to a reader may take.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -78,6 +83,9 @@ pub(crate) enum ClipError {
     /// The previous clipboard announced content but none of it could be read.
     #[error("the clipboard content could not be read")]
     Unreadable,
+    /// The portal didn't answer a read, or the owner didn't deliver the data, in time.
+    #[error("the clipboard did not answer in time")]
+    TimedOut,
     /// Reading or writing a transfer pipe failed.
     #[error("clipboard transfer: {0}")]
     Io(#[from] io::Error),
@@ -131,6 +139,12 @@ pub(crate) trait ClipboardAccess: Send + Sync {
 
 /// Decides what to keep of the previous clipboard after reading it. `announced`: the owner
 /// announced these types (`false`: nothing was announced, so the text types were tried).
+///
+/// A read that timed out ([`ClipError::TimedOut`]) means there is content that can't be saved:
+/// for an announced type, the whole snapshot fails. When nothing was announced, it means the
+/// owner doesn't offer that type (KDE answers reads of an empty clipboard with no data, but
+/// doesn't answer at all for types the owner doesn't offer); the types that were read are
+/// kept, and if none could be, the content can't be restored, so it must not be overwritten.
 pub(crate) fn keep_snapshot(
     announced: bool,
     reads: Vec<(String, Result<Vec<u8>, ClipError>)>,
@@ -138,6 +152,7 @@ pub(crate) fn keep_snapshot(
     let mut kept = Vec::new();
     let mut total = 0usize;
     let mut failed = 0usize;
+    let mut unanswered = 0usize;
     for (mime_type, read) in reads {
         match read {
             Ok(data) => {
@@ -148,13 +163,21 @@ pub(crate) fn keep_snapshot(
                 kept.push((mime_type, Arc::from(data)));
             }
             Err(ClipError::TooLarge) => return Err(ClipError::TooLarge),
+            Err(ClipError::TimedOut) if announced => {
+                debug!(mime_type, "reading this clipboard type timed out");
+                return Err(ClipError::Unreadable);
+            }
+            Err(ClipError::TimedOut) => {
+                debug!(mime_type, "no answer for this clipboard type");
+                unanswered += 1;
+            }
             Err(e) => {
                 debug!(mime_type, "cannot read this clipboard type: {e}");
                 failed += 1;
             }
         }
     }
-    if announced && kept.is_empty() && failed > 0 {
+    if kept.is_empty() && (unanswered > 0 || announced && failed > 0) {
         // There is content, but restoring it isn't possible: don't overwrite it.
         return Err(ClipError::Unreadable);
     }
@@ -169,6 +192,10 @@ enum Owner {
     Us,
     /// Another app, offering these mime types.
     Other(Vec<String>),
+    /// Unknown, and none of the text types could be read: content murmur can't save (KDE
+    /// doesn't answer reads of types the owner doesn't offer). Not probed again until the owner
+    /// changes, since each probe leaves calls the portal never answers.
+    Unreadable,
 }
 
 struct State {
@@ -238,16 +265,16 @@ impl Inner {
         }
     }
 
-    async fn read(&self, mime_type: &str) -> Result<Vec<u8>, ClipError> {
-        let fd = self
-            .clipboard
-            .selection_read(&self.session, mime_type)
+    /// Reads the selection as `mime_type`; the portal must answer within `answer_timeout`.
+    async fn read(&self, mime_type: &str, answer_timeout: Duration) -> Result<Vec<u8>, ClipError> {
+        let call = self.clipboard.selection_read(&self.session, mime_type);
+        let fd = tokio::time::timeout(answer_timeout, call)
             .await
+            .map_err(|_| ClipError::TimedOut)?
             .map_err(|e| ClipError::Portal(e.to_string()))?;
-        match tokio::time::timeout(READ_TIMEOUT, read_fd(fd.into(), MAX_TYPE_BYTES)).await {
-            Ok(read) => read,
-            Err(_) => Err(ClipError::Io(io::ErrorKind::TimedOut.into())),
-        }
+        tokio::time::timeout(READ_TIMEOUT, read_fd(fd.into(), MAX_TYPE_BYTES))
+            .await
+            .map_err(|_| ClipError::TimedOut)?
     }
 }
 
@@ -318,6 +345,28 @@ impl PortalClipboard {
     }
 }
 
+impl PortalClipboard {
+    /// Saves the selection of an owner that wasn't announced (KDE announces changes only, none
+    /// at `Start`): tries the text types, all at once, because KDE never answers for those the
+    /// owner doesn't offer. Remembers content that can't be read until the owner changes.
+    async fn probe(&self) -> Result<Offer, ClipError> {
+        let reads = futures_util::future::join_all(TEXT_MIME_TYPES.map(|mime_type| async move {
+            let read = self.inner.read(mime_type, PROBE_TIMEOUT).await;
+            (mime_type.to_owned(), read)
+        }))
+        .await;
+        let kept = keep_snapshot(false, reads);
+        if matches!(kept, Err(ClipError::Unreadable)) {
+            let mut state = self.inner.state();
+            // Unless the owner changed during the probe.
+            if matches!(state.owner, Owner::Unknown) {
+                state.owner = Owner::Unreadable;
+            }
+        }
+        kept
+    }
+}
+
 impl ClipboardAccess for PortalClipboard {
     fn snapshot(&self) -> ClipFuture<'_, Result<Offer, ClipError>> {
         Box::pin(async move {
@@ -325,23 +374,27 @@ impl ClipboardAccess for PortalClipboard {
                 let state = self.inner.state();
                 (state.owner.clone(), state.offer.clone())
             };
-            let (announced, types) = match owner {
+            let types: Vec<String> = match owner {
                 Owner::Us => return Ok(ours),
-                Owner::Other(types) => (
-                    true,
-                    types
-                        .into_iter()
-                        .filter(|t| !META_TARGETS.contains(&t.as_str()))
-                        .collect(),
-                ),
-                Owner::Unknown => (false, TEXT_MIME_TYPES.map(str::to_owned).to_vec()),
+                Owner::Unreadable => return Err(ClipError::Unreadable),
+                Owner::Unknown => return self.probe().await,
+                Owner::Other(types) => types
+                    .into_iter()
+                    .filter(|t| !META_TARGETS.contains(&t.as_str()))
+                    .collect(),
             };
+            // One at a time, each with the full time (owners may serve them one at a time). A
+            // timeout means content that can't be saved, so stop there.
             let mut reads = Vec::with_capacity(types.len());
             for mime_type in types {
-                let read = self.inner.read(&mime_type).await;
+                let read = self.inner.read(&mime_type, READ_TIMEOUT).await;
+                let timed_out = matches!(read, Err(ClipError::TimedOut));
                 reads.push((mime_type, read));
+                if timed_out {
+                    break;
+                }
             }
-            keep_snapshot(announced, reads)
+            keep_snapshot(true, reads)
         })
     }
 
@@ -596,6 +649,47 @@ mod tests {
         assert!(kept.expect("restorable").is_empty());
         // An announced empty clipboard is empty too.
         assert!(keep_snapshot(true, vec![]).expect("empty").is_empty());
+    }
+
+    #[test]
+    fn unanswered_reads_mean_content_that_cant_be_restored() {
+        // KDE: an image on the clipboard, murmur doesn't know the owner's types and asks for
+        // text, which the portal never answers.
+        let kept = keep_snapshot(
+            false,
+            vec![
+                ("text/plain".into(), Err(ClipError::TimedOut)),
+                ("UTF8_STRING".into(), Err(ClipError::TimedOut)),
+            ],
+        );
+        assert!(matches!(kept, Err(ClipError::Unreadable)), "{kept:?}");
+    }
+
+    #[test]
+    fn an_announced_type_read_too_late_blocks_the_paste() {
+        // The rest would be restored without it.
+        let kept = keep_snapshot(
+            true,
+            vec![
+                ("text/plain".into(), read("hello")),
+                ("image/png".into(), Err(ClipError::TimedOut)),
+            ],
+        );
+        assert!(matches!(kept, Err(ClipError::Unreadable)), "{kept:?}");
+    }
+
+    #[test]
+    fn types_without_an_answer_are_left_out() {
+        // A Qt app offers fewer text types than murmur tries.
+        let kept = keep_snapshot(
+            false,
+            vec![
+                ("text/plain;charset=utf-8".into(), read("hello")),
+                ("UTF8_STRING".into(), Err(ClipError::TimedOut)),
+            ],
+        );
+        let kept = kept.expect("restorable");
+        assert_eq!(kept.mime_types(), ["text/plain;charset=utf-8"]);
     }
 
     #[test]

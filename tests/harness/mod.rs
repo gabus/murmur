@@ -63,6 +63,129 @@ fn log_file(dir: &Path, name: &str) -> Stdio {
         .unwrap_or_else(|_| Stdio::null())
 }
 
+/// Environment for processes inside the nested session in `dir` with private bus `bus`.
+fn session_env(dir: &Path, bus: &str) -> Vec<(String, String)> {
+    let d = |sub: &str| dir.join(sub).display().to_string();
+    vec![
+        ("HOME".into(), std::env::var("HOME").unwrap_or_default()),
+        ("PATH".into(), "/usr/local/bin:/usr/bin:/bin".into()),
+        (
+            "XDG_RUNTIME_DIR".into(),
+            runtime_dir().display().to_string(),
+        ),
+        ("DBUS_SESSION_BUS_ADDRESS".into(), bus.to_owned()),
+        ("XDG_CONFIG_HOME".into(), d("config")),
+        ("XDG_DATA_HOME".into(), d("data")),
+        ("XDG_CACHE_HOME".into(), d("cache")),
+        ("XDG_STATE_HOME".into(), d("state")),
+    ]
+}
+
+/// A command running the desktop's `program` (KWin, the portals, wl-clipboard, spectacle) with
+/// exactly `env`. Inside a toolbox it runs on the host through `flatpak-spawn --host
+/// --clear-env`, so the versions under test are the host's, and `--clear-env` keeps the outer
+/// session's variables (bus, Wayland display) away from it; `watch_bus` ends it if we die.
+/// flatpak-spawn itself talks to the outer session bus: [`ENV_OUTER_BUS`] when set (the
+/// re-executed test process has the nested bus as its session bus), else the inherited one.
+fn host_command(program: &str, env: &[(String, String)], watch_bus: bool) -> Command {
+    let path = Path::new(program);
+    let here = if path.is_absolute() {
+        path.is_file()
+    } else {
+        on_path(program)
+    };
+    if here && !Path::new("/run/.toolboxenv").exists() {
+        let mut c = Command::new(program);
+        c.env_clear().envs(env.iter().map(|(k, v)| (k, v)));
+        return c;
+    }
+    assert!(
+        on_path("flatpak-spawn"),
+        "{program} not found (and no flatpak-spawn to run the host's)"
+    );
+    let mut c = Command::new("flatpak-spawn");
+    if let Ok(outer) = std::env::var(ENV_OUTER_BUS)
+        && !outer.is_empty()
+    {
+        c.env("DBUS_SESSION_BUS_ADDRESS", outer);
+    }
+    c.arg("--host");
+    if watch_bus {
+        c.arg("--watch-bus");
+    }
+    c.arg("--clear-env");
+    for (k, v) in env {
+        c.arg(format!("--env={k}={v}"));
+    }
+    c.arg(program);
+    c
+}
+
+/// The portal stack: (log name, host program, D-Bus name it owns), in start order.
+const PORTALS: [(&str, &str, &str); 3] = [
+    (
+        "permission-store",
+        "/usr/libexec/xdg-permission-store",
+        "org.freedesktop.impl.portal.PermissionStore",
+    ),
+    (
+        "portal-kde",
+        "/usr/libexec/xdg-desktop-portal-kde",
+        "org.freedesktop.impl.portal.desktop.kde",
+    ),
+    (
+        "portal",
+        "/usr/libexec/xdg-desktop-portal",
+        "org.freedesktop.portal.Desktop",
+    ),
+];
+
+/// Environment for clients of the nested display (and bus).
+fn display_env(dir: &Path, bus: &str, socket: &str) -> Vec<(String, String)> {
+    let mut env = session_env(dir, bus);
+    env.push(("WAYLAND_DISPLAY".into(), socket.to_owned()));
+    env
+}
+
+/// Environment for the portal processes of the nested session.
+fn portal_env(dir: &Path, bus: &str, socket: &str) -> Vec<(String, String)> {
+    let mut env = display_env(dir, bus, socket);
+    env.extend(
+        [
+            ("XDG_CURRENT_DESKTOP", "KDE"),
+            ("XDG_SESSION_TYPE", "wayland"),
+            ("QT_QPA_PLATFORM", "wayland"),
+        ]
+        .map(|(k, v)| (k.to_owned(), v.to_owned())),
+    );
+    env
+}
+
+/// Starts one portal process (logging to `<dir>/<name>{,-err}.log`) and waits until it owns
+/// `service` on `bus` (there is no service activation).
+async fn spawn_portal(
+    dir: &Path,
+    bus: &str,
+    env: &[(String, String)],
+    name: &str,
+    program: &str,
+    service: &'static str,
+) -> Child {
+    let child = host_command(program, env, true)
+        .stdin(Stdio::null())
+        .stdout(log_file(dir, name))
+        .stderr(log_file(dir, &format!("{name}-err")))
+        .spawn()
+        .unwrap_or_else(|e| panic!("spawn {program}: {e}"));
+    wait_for(
+        &format!("{service} on the private bus"),
+        Duration::from_secs(20),
+        || async move { has_owner(bus, service).await },
+    )
+    .await;
+    child
+}
+
 impl Nested {
     /// Starts dbus-daemon + KWin with the given `kxkbrc` layout list (e.g. `"us,lt"`).
     pub async fn start(layouts: &str) -> Self {
@@ -100,20 +223,29 @@ impl Nested {
 
     /// Environment for processes inside the nested session.
     pub fn session_env(&self) -> Vec<(String, String)> {
-        let d = |sub: &str| self.dir.join(sub).display().to_string();
-        vec![
-            ("HOME".into(), std::env::var("HOME").unwrap_or_default()),
-            ("PATH".into(), "/usr/local/bin:/usr/bin:/bin".into()),
-            (
-                "XDG_RUNTIME_DIR".into(),
-                runtime_dir().display().to_string(),
-            ),
-            ("DBUS_SESSION_BUS_ADDRESS".into(), self.bus.clone()),
-            ("XDG_CONFIG_HOME".into(), d("config")),
-            ("XDG_DATA_HOME".into(), d("data")),
-            ("XDG_CACHE_HOME".into(), d("cache")),
-            ("XDG_STATE_HOME".into(), d("state")),
-        ]
+        session_env(&self.dir, &self.bus)
+    }
+
+    /// Starts the real portal stack on the nested bus and display: `xdg-permission-store`,
+    /// `xdg-desktop-portal-kde` and `xdg-desktop-portal` (the host's, from `/usr/libexec`). The
+    /// private bus has no service activation, so each is started explicitly and waited for.
+    /// Permissions and restore tokens live in the nested `XDG_DATA_HOME`, and the portal's
+    /// dialogs show up on the nested display only.
+    pub async fn start_portals(&mut self) {
+        // Host apps must register their app ID, which the portal accepts only with a desktop
+        // file (docs/portal-findings.md → Running outside Flatpak).
+        let apps = self.dir.join("data/applications");
+        std::fs::create_dir_all(&apps).expect("create applications dir");
+        std::fs::write(
+            apps.join(format!("{}.desktop", murmur::paths::APP_ID)),
+            "[Desktop Entry]\nType=Application\nName=murmur (test)\nExec=true\nNoDisplay=true\n",
+        )
+        .expect("write desktop file");
+        let env = portal_env(&self.dir, &self.bus, &self.socket);
+        for (name, program, service) in PORTALS {
+            let child = spawn_portal(&self.dir, &self.bus, &env, name, program, service).await;
+            self.children.push((name, child));
+        }
     }
 
     async fn start_bus(&mut self) {
@@ -162,25 +294,9 @@ impl Nested {
             "--socket",
             &self.socket,
         ];
-        let env = self.session_env();
-        let mut cmd = if on_path("kwin_wayland") {
-            let mut c = Command::new("kwin_wayland");
-            c.env_clear().envs(env).args(kwin_args);
-            c
-        } else if on_path("flatpak-spawn") {
-            // Toolbox: run the host's KWin. `--clear-env` keeps the outer session's
-            // variables (bus, Wayland display) away from it; `--watch-bus` ends it if we die.
-            let mut c = Command::new("flatpak-spawn");
-            c.args(["--host", "--watch-bus", "--clear-env"]);
-            for (k, v) in env {
-                c.arg(format!("--env={k}={v}"));
-            }
-            c.arg("kwin_wayland").args(kwin_args);
-            c
-        } else {
-            panic!("kwin_wayland not found (and no flatpak-spawn to reach the host)");
-        };
+        let mut cmd = host_command("kwin_wayland", &self.session_env(), true);
         let child = cmd
+            .args(kwin_args)
             .stdin(Stdio::null())
             .stdout(log_file(&self.dir, "kwin"))
             .stderr(log_file(&self.dir, "kwin-err"))
@@ -253,30 +369,35 @@ impl Nested {
 
 impl Drop for Nested {
     fn drop(&mut self) {
-        // Reverse order: pad, KWin, bus. SIGTERM first (flatpak-spawn forwards it to the host
-        // process), SIGKILL if it doesn't exit.
+        // Reverse order: pad, portals, KWin, bus.
         while let Some((name, mut child)) = self.children.pop() {
-            let _ = Command::new("kill")
-                .args(["-TERM", &child.id().to_string()])
-                .status();
-            let deadline = Instant::now() + Duration::from_secs(5);
-            while Instant::now() < deadline {
-                if let Ok(Some(_)) = child.try_wait() {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            if let Ok(None) = child.try_wait() {
-                eprintln!("harness: {name} ignored SIGTERM, killing");
-                let _ = child.kill();
-                let _ = child.wait();
-            }
+            stop_child(name, &mut child);
         }
         if std::env::var_os("MURMUR_KEEP_NESTED").is_none() {
             let _ = std::fs::remove_dir_all(&self.dir);
         } else {
             eprintln!("harness: kept {}", self.dir.display());
         }
+    }
+}
+
+/// Stops a child: SIGTERM first (flatpak-spawn forwards it to the host process), SIGKILL if it
+/// doesn't exit.
+fn stop_child(name: &str, child: &mut Child) {
+    let _ = Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if let Ok(Some(_)) = child.try_wait() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    if let Ok(None) = child.try_wait() {
+        eprintln!("harness: {name} ignored SIGTERM, killing");
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }
 
@@ -295,9 +416,14 @@ where
 
 /// PID owning `org.kde.KWin` on `bus`, if any.
 pub async fn kwin_pid(bus: &str) -> Option<u32> {
+    owner_pid(bus, "org.kde.KWin").await
+}
+
+/// PID of the connection owning `name` (well-known or unique) on `bus`, if any.
+pub async fn owner_pid(bus: &str, name: &str) -> Option<u32> {
     let conn = zbus::connection::Builder::address(bus).build().await.ok()?;
     let dbus = zbus::fdo::DBusProxy::new(&conn).await.ok()?;
-    let name = zbus::names::BusName::try_from("org.kde.KWin").ok()?;
+    let name = zbus::names::BusName::try_from(name).ok()?;
     dbus.get_connection_unix_process_id(name).await.ok()
 }
 
@@ -700,4 +826,350 @@ impl RawKeyboard {
             self.mods
         );
     }
+}
+
+// --- The real portal stack in the nested session (tests/portal_nested_kde.rs) ---
+
+/// Resource class of the KDE portal backend's windows (its permission dialogs).
+const PORTAL_KDE_CLASS: &str = "org.freedesktop.impl.portal.desktop.kde";
+/// How long a host command (wl-copy, wl-paste, spectacle, cat) may take.
+const HOST_TIMEOUT: Duration = Duration::from_secs(10);
+
+impl ChildEnv {
+    /// Environment for host programs on the nested display and bus.
+    pub fn session_env(&self) -> Vec<(String, String)> {
+        display_env(&self.dir, &self.bus, &self.socket)
+    }
+
+    /// Starts the KDE portal backend again (after [`kill_portal_backend`]), like D-Bus
+    /// activation would in a real session. Logs to `portal-kde-2{,-err}.log`.
+    pub async fn restart_portal_backend(&self) -> HostProcess {
+        let (_, program, service) = PORTALS[1];
+        let env = portal_env(&self.dir, &self.bus, &self.socket);
+        let name = "portal-kde-2";
+        let child = spawn_portal(&self.dir, &self.bus, &env, name, program, service).await;
+        HostProcess(name, child)
+    }
+
+    /// Refuses to continue unless the portal frontend and the KDE backend on the nested bus run
+    /// with the nested bus and Wayland display, so their dialogs can only appear in the nested
+    /// KWin.
+    pub async fn assert_portals_isolated(&self) {
+        for name in [
+            "org.freedesktop.portal.Desktop",
+            "org.freedesktop.impl.portal.desktop.kde",
+        ] {
+            let pid = owner_pid(&self.bus, name)
+                .await
+                .unwrap_or_else(|| panic!("{name} on the nested bus"));
+            let path = format!("/proc/{pid}/environ");
+            // A toolbox (another user namespace) may not read a host process's environment.
+            let environ = match std::fs::read(&path) {
+                Ok(environ) => environ,
+                Err(_) => self
+                    .run_host("cat", &[&path], None)
+                    .await
+                    .unwrap_or_default(),
+            };
+            let vars: Vec<&[u8]> = environ.split(|&b| b == 0).collect();
+            for want in [
+                format!("DBUS_SESSION_BUS_ADDRESS={}", self.bus),
+                format!("WAYLAND_DISPLAY={}", self.socket),
+            ] {
+                assert!(
+                    vars.contains(&want.as_bytes()),
+                    "{name} (pid {pid}) is not the nested one: no {want}"
+                );
+            }
+        }
+    }
+
+    /// Runs a host program on the nested display and bus; returns its stdout (`None` on failure).
+    /// With `stdin`, its output isn't captured (empty), because it may leave a background
+    /// process behind that would hold the pipes open (wl-copy does).
+    async fn run_host(
+        &self,
+        program: &str,
+        args: &[&str],
+        stdin: Option<&[u8]>,
+    ) -> Option<Vec<u8>> {
+        use tokio::io::AsyncWriteExt;
+        let output = || {
+            if stdin.is_some() {
+                Stdio::null()
+            } else {
+                Stdio::piped()
+            }
+        };
+        let mut cmd =
+            tokio::process::Command::from(host_command(program, &self.session_env(), false));
+        cmd.args(args)
+            .stdin(if stdin.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
+            .stdout(output())
+            .stderr(output())
+            .kill_on_drop(true);
+        let mut child = cmd
+            .spawn()
+            .unwrap_or_else(|e| panic!("spawn {program}: {e}"));
+        if let (Some(data), Some(mut pipe)) = (stdin, child.stdin.take()) {
+            pipe.write_all(data).await.expect("write to host program");
+            // Dropping the pipe closes it: the end of the input.
+        }
+        let out = tokio::time::timeout(HOST_TIMEOUT, child.wait_with_output())
+            .await
+            .unwrap_or_else(|_| panic!("{program} {args:?} timed out"))
+            .expect("host program output");
+        if !out.status.success() {
+            eprintln!(
+                "harness: {program} {args:?}: {} {}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+            return None;
+        }
+        Some(out.stdout)
+    }
+
+    /// Screenshot of the nested screen (spectacle through KWin's ScreenShot2 on the nested bus)
+    /// as `<name>.png` in `$MURMUR_SCREENSHOTS`, or in the session directory.
+    pub async fn screenshot(&self, name: &str) -> PathBuf {
+        let dir = std::env::var_os("MURMUR_SCREENSHOTS")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.dir.clone());
+        std::fs::create_dir_all(&dir).expect("create screenshot dir");
+        let path = dir.join(format!("{name}.png"));
+        let out = path.display().to_string();
+        let taken = self
+            .run_host("spectacle", &["-b", "-n", "-f", "-o", &out], None)
+            .await
+            .is_some();
+        eprintln!(
+            "harness: screenshot {out} ({})",
+            if taken { "ok" } else { "failed" }
+        );
+        path
+    }
+
+    /// Puts `data` on the nested clipboard as `mime_type` (default: text), with wl-copy, which
+    /// keeps serving it in the background until another client takes the selection.
+    pub async fn copy(&self, mime_type: Option<&str>, data: &[u8]) {
+        let mut args = Vec::new();
+        if let Some(mime_type) = mime_type {
+            args.extend(["--type", mime_type]);
+        }
+        self.run_host("wl-copy", &args, Some(data))
+            .await
+            .expect("wl-copy on the nested display");
+    }
+
+    /// Mime types offered on the nested clipboard; empty when nothing is copied.
+    pub async fn clipboard_types(&self) -> Vec<String> {
+        self.run_host("wl-paste", &["--list-types"], None)
+            .await
+            .map(|out| {
+                String::from_utf8_lossy(&out)
+                    .lines()
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The nested clipboard's content as `mime_type`, if any.
+    pub async fn paste(&self, mime_type: &str) -> Option<Vec<u8>> {
+        self.run_host("wl-paste", &["--no-newline", "--type", mime_type], None)
+            .await
+    }
+}
+
+/// The `version` property of portal `interface` on `bus`, if the frontend exposes it.
+pub async fn portal_version(bus: &str, interface: &str) -> Option<u32> {
+    let reply = connect(bus)
+        .await
+        .call_method(
+            Some("org.freedesktop.portal.Desktop"),
+            "/org/freedesktop/portal/desktop",
+            Some("org.freedesktop.DBus.Properties"),
+            "Get",
+            &(interface, "version"),
+        )
+        .await
+        .ok()?;
+    let value: zbus::OwnedVariant = reply.body().deserialize().ok()?;
+    u32::try_from(value).ok()
+}
+
+/// The KDE portal backend's windows (its dialogs) on the nested KWin, as KRunner match IDs of
+/// KWin's window runner (`org.kde.KWin /WindowsRunner`), which can also activate them.
+pub async fn portal_dialogs(bus: &str) -> Vec<String> {
+    type Match = (
+        String,
+        String,
+        String,
+        i32,
+        f64,
+        std::collections::HashMap<String, zbus::OwnedVariant>,
+    );
+    let conn = connect(bus).await;
+    let Ok(reply) = conn
+        .call_method(
+            Some("org.kde.KWin"),
+            "/WindowsRunner",
+            Some("org.kde.krunner1"),
+            "Match",
+            &(PORTAL_KDE_CLASS,),
+        )
+        .await
+    else {
+        return Vec::new();
+    };
+    let matches: Vec<Match> = reply.body().deserialize().expect("window runner reply");
+    let mut dialogs = Vec::new();
+    for (id, ..) in matches {
+        // Match IDs are `<desktop>_<window uuid>`; check the window really is the backend's.
+        let uuid = id.split_once('_').map_or(id.as_str(), |(_, uuid)| uuid);
+        let info = conn
+            .call_method(
+                Some("org.kde.KWin"),
+                "/KWin",
+                Some("org.kde.KWin"),
+                "getWindowInfo",
+                &(uuid,),
+            )
+            .await;
+        let class = info.ok().and_then(|reply| {
+            let info: std::collections::HashMap<String, zbus::OwnedVariant> =
+                reply.body().deserialize().ok()?;
+            String::try_from(info.get("resourceClass")?.try_clone().ok()?).ok()
+        });
+        if class.as_deref() == Some(PORTAL_KDE_CLASS) {
+            dialogs.push(id);
+        }
+    }
+    dialogs
+}
+
+/// Waits up to `timeout` for a dialog of the KDE portal backend.
+pub async fn wait_portal_dialog(bus: &str, timeout: Duration) -> Option<String> {
+    let start = Instant::now();
+    loop {
+        if let Some(dialog) = portal_dialogs(bus).await.into_iter().next() {
+            return Some(dialog);
+        }
+        if start.elapsed() > timeout {
+            return None;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Answers the KDE portal's dialog with `key` from the "physical" keyboard (Return approves,
+/// Escape denies): waits for it, activates it through KWin (a new window may not get focus over
+/// the active one), presses the key and waits until it is gone.
+pub async fn answer_portal_dialog(bus: &str, kb: &mut RawKeyboard, key: u32) {
+    let dialog = wait_portal_dialog(bus, Duration::from_secs(20))
+        .await
+        .expect("no portal dialog appeared");
+    connect(bus)
+        .await
+        .call_method(
+            Some("org.kde.KWin"),
+            "/WindowsRunner",
+            Some("org.kde.krunner1"),
+            "Run",
+            &(dialog.as_str(), ""),
+        )
+        .await
+        .expect("activate the portal dialog");
+    // Let the activation settle before the key arrives.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    kb.key(key, true).await;
+    kb.key(key, false).await;
+    wait_for(
+        "the portal dialog to close",
+        Duration::from_secs(10),
+        || async { !portal_dialogs(bus).await.contains(&dialog) },
+    )
+    .await;
+}
+
+/// Ends the RemoteDesktop session as the user would: the "End" entry in the menu of the KDE
+/// backend's "Remote Control" tray icon (a StatusNotifierItem with a dbusmenu at `/MenuBar`, on
+/// another connection of the backend's process).
+pub async fn end_remote_control(bus: &str) {
+    type Item = (
+        i32,
+        std::collections::HashMap<String, zbus::OwnedVariant>,
+        Vec<zbus::OwnedVariant>,
+    );
+    let conn = connect(bus).await;
+    let dbus = zbus::fdo::DBusProxy::new(&conn).await.expect("bus proxy");
+    let backend = owner_pid(bus, "org.freedesktop.impl.portal.desktop.kde")
+        .await
+        .expect("KDE portal backend on the nested bus");
+    for name in dbus.list_names().await.expect("ListNames") {
+        if !name.starts_with(':') || owner_pid(bus, name.as_str()).await != Some(backend) {
+            continue;
+        }
+        let Ok(reply) = conn
+            .call_method(
+                Some(name.as_str()),
+                "/MenuBar",
+                Some("com.canonical.dbusmenu"),
+                "GetLayout",
+                &(0i32, -1i32, vec!["label"]),
+            )
+            .await
+        else {
+            continue;
+        };
+        let (_, (_, _, children)): (u32, Item) = reply.body().deserialize().expect("menu layout");
+        for child in children {
+            let Ok((id, props, _)) = Item::try_from(child) else {
+                continue;
+            };
+            let label = props
+                .get("label")
+                .and_then(|l| String::try_from(l.try_clone().ok()?).ok())
+                .unwrap_or_default();
+            if label.replace('&', "") == "End" {
+                conn.call_method(
+                    Some(name.as_str()),
+                    "/MenuBar",
+                    Some("com.canonical.dbusmenu"),
+                    "Event",
+                    &(id, "clicked", zbus::Variant::from(""), 0u32),
+                )
+                .await
+                .expect("click End");
+                return;
+            }
+        }
+    }
+    panic!("no \"End\" entry in the KDE portal's tray menu");
+}
+
+/// A host process started by the re-executed test process; stopped on drop.
+pub struct HostProcess(&'static str, Child);
+
+impl Drop for HostProcess {
+    fn drop(&mut self) {
+        stop_child(self.0, &mut self.1);
+    }
+}
+
+/// Kills the KDE portal backend (after [`ChildEnv::assert_portals_isolated`]).
+pub async fn kill_portal_backend(bus: &str) {
+    let pid = owner_pid(bus, "org.freedesktop.impl.portal.desktop.kde")
+        .await
+        .expect("KDE portal backend on the nested bus");
+    let killed = Command::new("kill")
+        .args(["-TERM", &pid.to_string()])
+        .status()
+        .is_ok_and(|s| s.success());
+    assert!(killed, "kill the KDE portal backend (pid {pid})");
 }

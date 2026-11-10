@@ -66,11 +66,11 @@ Goal: `murmur` daemon, hotkey toggles listening, phrases get typed.
 - [x] Config file `$XDG_CONFIG_HOME/murmur/config.toml` (model, pause, idle unload, microphone, autostart, paste keys; spacing is fixed by D-002)
 - [x] First-run setup window: shortcut → typing permission → model download (one time only); D-009, verified in a nested KWin with the real daemon
 - [x] Settings window (D-010)
-- [ ] Verify the paste fallback against the real Clipboard portal (KDE, then GNOME)
+- [ ] Verify the paste fallback against the real Clipboard portal (KDE ✅ in a nested KWin, `tests/portal_nested_kde.rs`; GNOME pending)
 - [ ] Investigate cpal PulseAudio host failing inside the Flatpak (now logged)
 - [x] Left-click tray icon toggles listening; right-click opens menu
 - [x] Optional audio source picker (config + Settings window)
-- [x] Clipboard + paste fallback for characters the active layout can't produce (D-011/D-012; real-portal check pending)
+- [x] Clipboard + paste fallback for characters the active layout can't produce (D-011/D-012; KDE portal verified, GNOME pending)
 - [x] Autostart via Background portal (opt-in)
 - [x] Single-instance guard (D-Bus name; a second start opens Settings; `Toggle` exposed on D-Bus)
 - [x] Graceful handling of portal denial and session loss
