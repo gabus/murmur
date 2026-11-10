@@ -12,14 +12,14 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
     asr::worker::{AsrInput, AsrOutput, AsrWorker, SessionId},
-    audio::{self, Capture, Level},
+    audio::{self, Capture, Level, Mic},
     hotkey::{Hotkey, HotkeyEvent},
     model_manager::{ModelEvent, ModelManager, ModelsView, Outcome},
     models::{self, MODELS},
     notify::Notifier,
     output::{Output, OutputEvent},
     ui::protocol::{DownloadRow, FromUi, ModelRow, ShortcutState, TypingState, UiState, Window},
-    ui_host::{UiEvent, UiHost},
+    ui_host::{Generation, UiEvent, UiHost},
 };
 
 /// Keep recording this long after the stop key so the last syllable isn't cut.
@@ -30,6 +30,17 @@ const MIC_OPEN_TIMEOUT: Duration = Duration::from_secs(3);
 const QUIT_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 /// On quit, wait at most this long for queued words to be typed.
 const QUIT_TYPE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Upper bound for the idle-unload setting (one day).
+const MAX_IDLE_MINUTES: u32 = 24 * 60;
+
+/// What an error is about, so fixing one problem clears only its error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorKind {
+    Model,
+    Typing,
+    Microphone,
+    Shortcut,
+}
 
 /// What the user should see (tray icon).
 #[derive(Debug, Clone, PartialEq)]
@@ -40,7 +51,7 @@ pub enum Status {
     Listening,
     /// Words are waiting until the user releases the modifier keys they hold.
     Waiting,
-    Error(String),
+    Error(ErrorKind, String),
 }
 
 /// Commands from the UI (tray, D-Bus).
@@ -66,8 +77,11 @@ enum State {
 
 /// Results of background work started by the app.
 enum Internal {
-    Microphones(Vec<String>),
-    Autostart(Result<bool, String>),
+    Microphones(Vec<Mic>),
+    Autostart {
+        requested: bool,
+        result: Result<bool, String>,
+    },
 }
 
 /// Event sources the app listens to.
@@ -85,6 +99,8 @@ pub struct Parts {
     pub asr: AsrWorker,
     pub output: Output,
     pub hotkey: Option<Hotkey>,
+    /// Lets the app bind the shortcut again after it failed (None: no shortcut wanted).
+    pub hotkey_events: Option<mpsc::UnboundedSender<HotkeyEvent>>,
     pub level: Level,
     pub status: watch::Sender<Status>,
     /// The bound shortcut, for the tray tooltip.
@@ -97,6 +113,7 @@ pub struct App {
     asr: AsrWorker,
     output: Output,
     hotkey: Option<Hotkey>,
+    hotkey_events: Option<mpsc::UnboundedSender<HotkeyEvent>>,
     level: Level,
     status: watch::Sender<Status>,
     shortcut_label: watch::Sender<Option<String>>,
@@ -112,15 +129,15 @@ pub struct App {
     unload_at: Option<Instant>,
     // Window state.
     ui: Option<UiHost>,
+    ui_generation: Generation,
     ui_tx: mpsc::UnboundedSender<UiEvent>,
     ui_rx: mpsc::UnboundedReceiver<UiEvent>,
     internal_tx: mpsc::UnboundedSender<Internal>,
     internal_rx: mpsc::UnboundedReceiver<Internal>,
     shortcut: ShortcutState,
     typing: TypingState,
-    microphones: Vec<String>,
+    microphones: Vec<Mic>,
     autostart_error: Option<String>,
-    download_error: Option<(String, String)>,
     models_view: ModelsView,
 }
 
@@ -141,6 +158,7 @@ impl App {
             asr: parts.asr,
             output: parts.output,
             hotkey: parts.hotkey,
+            hotkey_events: parts.hotkey_events,
             level: parts.level,
             status: parts.status,
             shortcut_label: parts.shortcut_label,
@@ -154,6 +172,7 @@ impl App {
             audio_err_rx,
             unload_at: None,
             ui: None,
+            ui_generation: 0,
             ui_tx,
             ui_rx,
             internal_tx,
@@ -162,7 +181,6 @@ impl App {
             typing: TypingState::Unknown,
             microphones: Vec::new(),
             autostart_error: None,
-            download_error: None,
             models_view,
         }
     }
@@ -198,15 +216,15 @@ impl App {
                     Some(Command::Quit) | None => break,
                 },
                 Some(ev) = ch.models.recv() => {
-                    if let ModelEvent::Finished(id, Err(e)) = &ev {
-                        self.download_error = Some(((*id).to_owned(), e.to_string()));
-                    }
                     let outcome = self.models.on_event(ev);
                     self.apply(outcome);
                 }
                 changed = ch.models_view.changed() => {
                     if changed.is_ok() {
                         self.models_view = ch.models_view.borrow_and_update().clone();
+                        if self.models_view.failed.is_none() && self.models.active_installed() {
+                            self.clear_error(ErrorKind::Model);
+                        }
                         self.push_ui();
                     }
                 }
@@ -225,7 +243,7 @@ impl App {
                 Some(why) = self.audio_err_rx.recv() => {
                     if self.state == State::Listening {
                         error!(%why, "microphone failed while listening");
-                        self.set_status(Status::Error(format!("Microphone error: {why}")));
+                        self.set_status(Status::Error(ErrorKind::Microphone, format!("Microphone error: {why}")));
                         self.notifier.error("murmur: microphone lost", &why);
                         self.stop().await;
                     }
@@ -240,7 +258,7 @@ impl App {
     async fn shutdown(mut self, mut asr_out: mpsc::UnboundedReceiver<AsrOutput>) {
         info!("shutting down");
         if let Some(ui) = self.ui.take() {
-            ui.close();
+            ui.shutdown().await;
         }
         if self.state == State::Listening {
             self.stop().await;
@@ -283,10 +301,8 @@ impl App {
     }
 
     fn select_model(&mut self, id: &str) {
-        self.download_error = None;
         let outcome = self.models.select(id);
         self.apply(outcome);
-        self.push_ui();
     }
 
     fn apply(&mut self, outcome: Outcome) {
@@ -294,16 +310,17 @@ impl App {
             Outcome::None => {}
             Outcome::Switch(spec) => {
                 self.asr.send(AsrInput::SetModel(spec));
-                if matches!(*self.status.borrow(), Status::Error(_)) && self.state == State::Idle {
-                    self.set_status(Status::Idle);
-                }
+                self.clear_error(ErrorKind::Model);
             }
             Outcome::Failed(why) => {
-                // The setup window shows download errors itself.
-                if self.ui.is_none() {
+                // The setup page shows download errors itself.
+                if !self.setup_open() {
                     self.notifier.error("murmur: model download failed", &why);
                 }
-                self.set_status(Status::Error(format!("Model download failed: {why}")));
+                self.set_status(Status::Error(
+                    ErrorKind::Model,
+                    format!("Model download failed: {why}"),
+                ));
             }
         }
         self.push_ui();
@@ -319,7 +336,7 @@ impl App {
                 format!("{} isn't downloaded yet; downloading now", model.name)
             };
             info!(%why, "can't start dictation");
-            self.set_status(Status::Error(why.clone()));
+            self.set_status(Status::Error(ErrorKind::Model, why.clone()));
             self.notifier.error("murmur: no speech model yet", &why);
             return;
         }
@@ -363,7 +380,7 @@ impl App {
         self.asr.send(AsrInput::End);
         self.state = State::Finishing;
         self.notifier.error("murmur: no microphone", &failure);
-        self.set_status(Status::Error(failure));
+        self.set_status(Status::Error(ErrorKind::Microphone, failure));
     }
 
     async fn stop(&mut self) {
@@ -396,26 +413,47 @@ impl App {
                     error: None,
                 };
                 self.shortcut_label.send_replace(trigger);
-                self.push_ui();
+                self.clear_error(ErrorKind::Shortcut);
             }
             HotkeyEvent::Failed(why) => {
                 self.shortcut = ShortcutState {
                     error: Some(why),
+                    // "Change" binds again.
+                    can_change: self.hotkey_events.is_some(),
                     ..Default::default()
                 };
-                self.push_ui();
+                self.shortcut_label.send_replace(None);
+                self.report_shortcut_problem(
+                    "murmur: no global shortcut",
+                    "No shortcut is set. Click the tray icon to dictate, or set one in murmur's settings.",
+                );
             }
             HotkeyEvent::Lost(why) => {
                 warn!(%why, "global shortcut lost");
                 self.shortcut.error = Some("The shortcut stopped working".into());
-                self.set_status(Status::Error("Shortcut unavailable".into()));
-                self.notifier.error(
+                self.shortcut.can_change = self.hotkey_events.is_some();
+                self.shortcut_label.send_replace(None);
+                self.report_shortcut_problem(
                     "murmur: shortcut unavailable",
-                    "The global shortcut stopped working. Click the tray icon to dictate, or restart murmur.",
+                    "The global shortcut stopped working. Click the tray icon to dictate, or set it again in murmur's settings.",
                 );
-                self.push_ui();
+            }
+            HotkeyEvent::ConfigureFailed(why) => {
+                self.shortcut.pending = false;
+                self.shortcut.error = Some(format!("Couldn't open the shortcut settings: {why}"));
             }
         }
+        self.push_ui();
+    }
+
+    fn report_shortcut_problem(&mut self, title: &str, body: &str) {
+        if !self.setup_open() {
+            self.notifier.error(title, body);
+        }
+        self.set_status(Status::Error(
+            ErrorKind::Shortcut,
+            "No global shortcut".into(),
+        ));
     }
 
     async fn on_asr(&mut self, out: AsrOutput) {
@@ -428,7 +466,10 @@ impl App {
             }
             AsrOutput::LoadFailed(e) => {
                 error!(error = %e, "speech model unavailable");
-                self.set_status(Status::Error(format!("Speech model unavailable: {e}")));
+                self.set_status(Status::Error(
+                    ErrorKind::Model,
+                    format!("Speech model unavailable: {e}"),
+                ));
                 self.notifier
                     .error("murmur: speech model missing", &format!("{e}"));
                 if self.state == State::Listening {
@@ -445,7 +486,7 @@ impl App {
                         self.unload_at =
                             Some(Instant::now() + Duration::from_secs(u64::from(mins) * 60));
                     }
-                    if !matches!(*self.status.borrow(), Status::Error(_)) {
+                    if !matches!(*self.status.borrow(), Status::Error(..)) {
                         self.set_status(Status::Idle);
                     }
                     info!("idle");
@@ -462,22 +503,35 @@ impl App {
             OutputEvent::Ready => {
                 info!("typing ready");
                 self.typing = TypingState::Granted;
+                self.clear_error(ErrorKind::Typing);
             }
             OutputEvent::PermissionDenied => {
                 self.typing = TypingState::Denied;
-                self.set_status(Status::Error("Typing permission denied".into()));
-                if self.ui.is_none() {
+                self.set_status(Status::Error(
+                    ErrorKind::Typing,
+                    "Typing permission denied".into(),
+                ));
+                if !self.setup_open() {
                     self.notifier.error(
                         "murmur can't type",
                         "Permission to type was denied. Dictate again to be asked once more.",
                     );
                 }
             }
-            OutputEvent::Disconnected(why) => warn!(%why, "typing session lost"),
+            OutputEvent::Disconnected(why) => {
+                warn!(%why, "typing session lost");
+                // A failed "Allow…" attempt: let the user try again.
+                if self.typing == TypingState::Asking {
+                    self.typing = TypingState::Unknown;
+                }
+            }
             OutputEvent::Unavailable(why) => {
                 self.typing = TypingState::Unavailable(why.clone());
-                self.set_status(Status::Error(format!("Typing unavailable: {why}")));
-                if self.ui.is_none() {
+                self.set_status(Status::Error(
+                    ErrorKind::Typing,
+                    format!("Typing unavailable: {why}"),
+                ));
+                if !self.setup_open() {
                     self.notifier.error("murmur can't type", &why);
                 }
             }
@@ -504,14 +558,27 @@ impl App {
         self.push_ui();
     }
 
+    fn setup_open(&self) -> bool {
+        self.ui.as_ref().is_some_and(|u| u.window == Window::Setup)
+    }
+
     fn open_window(&mut self, window: Window) {
         if self.ui.is_some() {
             debug!("a window is already open");
             return;
         }
-        match UiHost::open(window, self.ui_state(), self.ui_tx.clone()) {
+        self.ui_generation += 1;
+        match UiHost::open(
+            window,
+            self.ui_generation,
+            self.ui_state(),
+            self.ui_tx.clone(),
+        ) {
             Ok(ui) => self.ui = Some(ui),
-            Err(e) => warn!(error = %e, "cannot open the window"),
+            Err(e) => {
+                warn!(error = %e, "cannot open the window");
+                return;
+            }
         }
         // Microphone names are slow to list; fill them in when ready.
         let tx = self.internal_tx.clone();
@@ -524,56 +591,89 @@ impl App {
 
     fn on_ui(&mut self, ev: UiEvent) {
         let req = match ev {
-            UiEvent::Closed => {
-                info!("window closed");
-                self.ui = None;
+            UiEvent::Closed(generation) => {
+                if self.ui.as_ref().is_some_and(|u| u.generation == generation) {
+                    info!("window closed");
+                    self.ui = None;
+                }
                 return;
             }
             UiEvent::Request(r) => r,
         };
         match req {
             FromUi::ChangeShortcut => {
-                if let Some(h) = &self.hotkey {
-                    h.configure();
+                let dead = self.hotkey.as_ref().is_none_or(Hotkey::is_finished);
+                match (&self.hotkey, &self.hotkey_events) {
+                    // Binding failed or the session was lost: bind again.
+                    (_, Some(tx)) if dead => {
+                        self.hotkey = Some(Hotkey::spawn(tx.clone()));
+                        self.shortcut.pending = true;
+                        self.shortcut.error = None;
+                    }
+                    (Some(h), _) => {
+                        h.configure();
+                        self.shortcut.pending = true;
+                    }
+                    _ => {}
                 }
             }
             FromUi::AllowTyping => {
-                self.typing = TypingState::Asking;
-                self.output.retry();
+                if self.typing != TypingState::Granted {
+                    self.typing = TypingState::Asking;
+                    self.output.retry();
+                }
             }
             FromUi::SelectModel(id) => self.select_model(&id),
             FromUi::RetryDownload(id) => {
-                self.download_error = None;
                 if let Some(m) = models::find(&id) {
                     self.models.start_download(m);
                 }
             }
-            FromUi::SetMicrophone(name) => {
-                let o = self.models.update_config(|c| c.microphone = name);
+            FromUi::SetMicrophone(label) => {
+                let id = if label.is_empty() {
+                    String::new()
+                } else {
+                    self.microphones
+                        .iter()
+                        .find(|m| m.label == label)
+                        .map_or(label, |m| m.id.clone())
+                };
+                let o = self.models.update_config(|c| c.microphone = id);
                 self.apply(o);
             }
             FromUi::SetPauseSecs(p) => {
-                let o = self
-                    .models
-                    .update_config(|c| c.pause_secs = p.clamp(0.3, 3.0));
+                let p = if p.is_finite() {
+                    p.clamp(0.3, 3.0)
+                } else {
+                    0.8
+                };
+                let o = self.models.update_config(|c| c.pause_secs = p);
                 self.apply(o);
             }
             FromUi::SetIdleMinutes(m) => {
+                let m = m.min(MAX_IDLE_MINUTES);
                 let o = self.models.update_config(|c| c.idle_unload_minutes = m);
                 self.apply(o);
+                if self.unload_at.is_some() {
+                    self.unload_at =
+                        (m > 0).then(|| Instant::now() + Duration::from_secs(u64::from(m) * 60));
+                }
             }
             FromUi::SetAutostart(enabled) => {
                 self.autostart_error = None;
                 let tx = self.internal_tx.clone();
                 tokio::spawn(async move {
-                    let r = crate::autostart::set(enabled).await;
-                    let _ = tx.send(Internal::Autostart(r));
+                    let result = crate::autostart::set(enabled).await;
+                    let _ = tx.send(Internal::Autostart {
+                        requested: enabled,
+                        result,
+                    });
                 });
             }
             FromUi::SetupDone => {
                 let o = self.models.update_config(|c| c.setup_done = true);
                 self.apply(o);
-                if let Some(ui) = &self.ui {
+                if let Some(ui) = &mut self.ui {
                     ui.close();
                 }
                 info!("setup complete");
@@ -585,11 +685,16 @@ impl App {
     fn on_internal(&mut self, r: Internal) {
         match r {
             Internal::Microphones(m) => self.microphones = m,
-            Internal::Autostart(Ok(on)) => {
+            Internal::Autostart {
+                requested,
+                result: Ok(on),
+            } => {
+                self.autostart_error = (requested && !on)
+                    .then(|| "The desktop didn't allow starting at login".to_owned());
                 let o = self.models.update_config(|c| c.autostart = on);
                 self.apply(o);
             }
-            Internal::Autostart(Err(e)) => {
+            Internal::Autostart { result: Err(e), .. } => {
                 warn!(error = %e, "could not change autostart");
                 self.autostart_error = Some(e);
             }
@@ -612,7 +717,7 @@ impl App {
                 active: view.active == m.id,
             })
             .collect();
-        let download = match (&view.download, &self.download_error) {
+        let download = match (&view.download, &view.failed) {
             (Some(d), _) => Some(DownloadRow {
                 model_id: d.model.to_owned(),
                 percent: d.percent,
@@ -620,7 +725,7 @@ impl App {
                 error: None,
             }),
             (None, Some((id, e))) => Some(DownloadRow {
-                model_id: id.clone(),
+                model_id: (*id).to_owned(),
                 percent: 0,
                 unpacking: false,
                 error: Some(e.clone()),
@@ -628,14 +733,20 @@ impl App {
             (None, None) => None,
         };
         let mut microphones = vec![String::new()];
-        microphones.extend(self.microphones.iter().cloned());
+        microphones.extend(self.microphones.iter().map(|m| m.label.clone()));
+        // Show the configured mic by its label (the config stores its id).
+        let microphone = self
+            .microphones
+            .iter()
+            .find(|m| m.id == cfg.microphone || m.label == cfg.microphone)
+            .map_or_else(|| cfg.microphone.clone(), |m| m.label.clone());
         UiState {
             shortcut: self.shortcut.clone(),
             typing: self.typing.clone(),
             models,
             download,
             microphones,
-            microphone: cfg.microphone.clone(),
+            microphone,
             pause_secs: cfg.pause_secs,
             idle_minutes: cfg.idle_unload_minutes,
             autostart: cfg.autostart,
@@ -646,6 +757,21 @@ impl App {
     fn push_ui(&self) {
         if let Some(ui) = &self.ui {
             ui.send(self.ui_state());
+        }
+    }
+
+    /// Clears an error of this kind (only while idle; a new dictation resets
+    /// the status anyway).
+    fn clear_error(&self, kind: ErrorKind) {
+        if self.state == State::Idle {
+            self.status.send_if_modified(|cur| {
+                if matches!(cur, Status::Error(k, _) if *k == kind) {
+                    *cur = Status::Idle;
+                    true
+                } else {
+                    false
+                }
+            });
         }
     }
 

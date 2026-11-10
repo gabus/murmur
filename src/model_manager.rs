@@ -21,6 +21,9 @@ pub struct ModelsView {
     pub active: &'static str,
     pub installed: Vec<&'static str>,
     pub download: Option<DownloadView>,
+    /// The last download that failed (model id, message); cleared when a
+    /// download starts or succeeds.
+    pub failed: Option<(&'static str, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -82,6 +85,7 @@ impl ModelManager {
             active: active.id,
             installed: Vec::new(),
             download: None,
+            failed: None,
         });
         let mut m = Self {
             config,
@@ -171,6 +175,7 @@ impl ModelManager {
         });
         self.task = Some((model.id, handle));
         self.view.send_modify(|v| {
+            v.failed = None;
             v.download = Some(DownloadView {
                 model: model.id,
                 percent: 0,
@@ -231,6 +236,9 @@ impl ModelManager {
                 }
                 self.task = None;
                 self.refresh();
+                self.view.send_modify(|v| {
+                    v.failed = result.as_ref().err().map(|e| (id, e.to_string()));
+                });
                 match result {
                     Ok(()) => match models::find(id) {
                         Some(m) => {

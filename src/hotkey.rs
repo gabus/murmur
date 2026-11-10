@@ -35,6 +35,8 @@ pub enum HotkeyEvent {
     Failed(String),
     /// The portal session ended; the shortcut no longer works.
     Lost(String),
+    /// The desktop couldn't open its shortcut dialog.
+    ConfigureFailed(String),
 }
 
 enum Cmd {
@@ -70,6 +72,12 @@ impl Hotkey {
     pub fn configure(&self) {
         let _ = self.cmd.send(Cmd::Configure);
     }
+
+    /// The task ended (binding failed or the session was lost); spawn a new
+    /// `Hotkey` to bind again.
+    pub fn is_finished(&self) -> bool {
+        self.task.is_finished()
+    }
 }
 
 fn trigger_of(shortcuts: &[Shortcut]) -> Option<String> {
@@ -85,11 +93,13 @@ async fn run(
     mut cmds: mpsc::UnboundedReceiver<Cmd>,
 ) -> Result<(), ashpd::Error> {
     crate::portal::register_host_app().await;
-    let portal = GlobalShortcuts::new().await?;
+    let portal = std::sync::Arc::new(GlobalShortcuts::new().await?);
     let can_configure = portal.version() >= 2;
-    let session = portal
-        .create_session(CreateSessionOptions::default())
-        .await?;
+    let session = std::sync::Arc::new(
+        portal
+            .create_session(CreateSessionOptions::default())
+            .await?,
+    );
     let shortcut = NewShortcut::new(SHORTCUT_ID, "Start or stop dictation")
         .preferred_trigger(PREFERRED_TRIGGER);
     let bound = portal
@@ -134,12 +144,18 @@ async fn run(
             }
             Some(cmd) = cmds.recv() => match cmd {
                 Cmd::Configure => {
-                    if let Err(e) = portal
-                        .configure_shortcuts(&session, None, ConfigureShortcutsOptions::default())
-                        .await
-                    {
-                        warn!(error = %e, "cannot open the shortcut settings");
-                    }
+                    // The backend may reply only when its dialog closes: don't
+                    // block activations meanwhile.
+                    let (p, s, ev) = (portal.clone(), session.clone(), events.clone());
+                    tokio::spawn(async move {
+                        if let Err(e) = p
+                            .configure_shortcuts(&s, None, ConfigureShortcutsOptions::default())
+                            .await
+                        {
+                            warn!(error = %e, "cannot open the shortcut settings");
+                            let _ = ev.send(HotkeyEvent::ConfigureFailed(e.to_string()));
+                        }
+                    });
                 }
             },
             c = closed.next() => {

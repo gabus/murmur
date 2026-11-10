@@ -14,7 +14,7 @@ use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 fn main() -> Result<()> {
-    if std::env::args().nth(1).as_deref() == Some("--ui") {
+    if std::env::args_os().nth(1).is_some_and(|a| a == "--ui") {
         // The UI process; never start a second daemon from here (it would ask
         // the running one to open a window, which would start another UI…).
         anyhow::bail!("this build has no UI windows yet");
@@ -83,17 +83,20 @@ async fn run() -> Result<()> {
     let asr = AsrWorker::spawn(models_mgr.active_spec(), asr_tx).context("starting ASR worker")?;
 
     let (out_tx, out_rx) = mpsc::unbounded_channel();
-    let source = EisSource::Portal {
-        token_path: state.join("remote-desktop.token"),
-    };
-    #[cfg(feature = "dev-harness")]
-    let source = if std::env::var("MURMUR_DEV_EIS").as_deref() == Ok("kwin-direct") {
+    let token_path = state.join("remote-desktop.token");
+    // Test builds can type into a nested KWin instead (never the real session).
+    let kwin_direct = cfg!(feature = "dev-harness")
+        && std::env::var("MURMUR_DEV_EIS").as_deref() == Ok("kwin-direct");
+    let source = if kwin_direct {
         EisSource::KwinDirect
     } else {
-        source
+        EisSource::Portal {
+            token_path: token_path.clone(),
+        }
     };
-    // On first run the typing-permission dialog waits for "Allow…" in the setup page.
-    let output = if first_run {
+    // Connect eagerly only when a stored permission makes that silent. On first
+    // run the dialog waits for "Allow…"; after a denial, for the next dictation.
+    let output = if !kwin_direct && (first_run || !token_path.exists()) {
         Output::spawn_idle(source, out_tx)
     } else {
         Output::spawn(source, out_tx)
@@ -104,7 +107,7 @@ async fn run() -> Result<()> {
     let (hk_tx, hk_rx) = mpsc::unbounded_channel();
     let use_hotkey =
         !cfg!(feature = "dev-harness") || std::env::var_os("MURMUR_DEV_NO_HOTKEY").is_none();
-    let hotkey = use_hotkey.then(|| Hotkey::spawn(hk_tx));
+    let hotkey = use_hotkey.then(|| Hotkey::spawn(hk_tx.clone()));
 
     #[cfg(feature = "dev-harness")]
     if std::env::var_os("MURMUR_DEV_AUTORUN").is_some() {
@@ -144,6 +147,7 @@ async fn run() -> Result<()> {
             asr,
             output,
             hotkey,
+            hotkey_events: use_hotkey.then_some(hk_tx),
             level,
             status: status_tx,
             shortcut_label: shortcut_tx,

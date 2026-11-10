@@ -143,6 +143,7 @@ async fn sni_name(conn: &zbus::Connection) -> String {
     panic!("murmur's tray item never appeared on the nested bus");
 }
 
+#[allow(deprecated)] // zvariant's OwnedValue has the conversions these checks need
 async fn sni_prop(conn: &zbus::Connection, name: &str, prop: &str) -> zbus::zvariant::OwnedValue {
     let reply = conn
         .call_method(
@@ -158,6 +159,7 @@ async fn sni_prop(conn: &zbus::Connection, name: &str, prop: &str) -> zbus::zvar
     v
 }
 
+#[allow(deprecated)]
 async fn icon_name(conn: &zbus::Connection, name: &str) -> String {
     String::try_from(sni_prop(conn, name, "IconName").await).unwrap_or_default()
 }
@@ -191,6 +193,7 @@ async fn activate(conn: &zbus::Connection, name: &str) {
 /// Left-click the tray icon to start, again to stop: the spec's "Clicks tray icon".
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs kwin_wayland, the spike test pad and the models; see the file header"]
+#[allow(deprecated)]
 async fn dictation_via_tray_icon() {
     let models = murmur::paths::models_dir().expect("XDG data dir");
     let wav: PathBuf = models.join("sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/test_wavs/en.wav");

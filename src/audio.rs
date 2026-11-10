@@ -177,44 +177,68 @@ struct Shared {
 /// PulseAudio (lists real microphones by name), else whatever cpal defaults to.
 /// Logs why PulseAudio isn't used, once.
 fn host() -> cpal::Host {
-    static REPORTED: std::sync::Once = std::sync::Once::new();
-    match cpal::host_from_id(cpal::HostId::PulseAudio) {
-        Ok(h) => h,
+    // Decided once: each failed PulseAudio attempt can take seconds.
+    static CHOSEN: std::sync::OnceLock<cpal::HostId> = std::sync::OnceLock::new();
+    let id = *CHOSEN.get_or_init(|| match cpal::host_from_id(cpal::HostId::PulseAudio) {
+        Ok(_) => cpal::HostId::PulseAudio,
         Err(e) => {
-            REPORTED.call_once(
-                || warn!(error = %e, "PulseAudio unavailable, using the default audio host"),
-            );
-            cpal::default_host()
+            warn!(error = %e, "PulseAudio unavailable, using ALSA");
+            cpal::HostId::Alsa
         }
-    }
+    });
+    cpal::host_from_id(id).unwrap_or_else(|_| cpal::default_host())
 }
 
-/// Names of the available microphones (blocking; call off the async runtime).
-pub fn microphones() -> Vec<String> {
+/// A microphone: a stable id for the config and a label for people.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Mic {
+    /// cpal device id, e.g. `pulseaudio:alsa_input.usb-…` (locale-independent).
+    pub id: String,
+    pub label: String,
+}
+
+/// The available microphones (blocking; call off the async runtime).
+/// Duplicate labels get a numeric suffix so they stay distinguishable.
+pub fn microphones() -> Vec<Mic> {
     let host = host();
     let Ok(devices) = host.input_devices() else {
         return Vec::new();
     };
-    let mut names: Vec<String> = devices
-        .filter_map(|d| d.description().ok().map(|n| n.name().to_owned()))
+    let mut mics: Vec<Mic> = devices
+        .filter_map(|d| {
+            let id = d.id().ok()?.to_string();
+            let label = d.description().ok()?.name().to_owned();
+            Some(Mic { id, label })
+        })
         // PulseAudio lists every output's monitor as an input; that's not a mic.
-        .filter(|n| !n.starts_with("Monitor of "))
+        .filter(|m| !m.id.ends_with(".monitor") && !m.label.starts_with("Monitor of "))
         .collect();
-    names.sort();
-    names.dedup();
-    names
+    mics.sort_by(|a, b| a.label.cmp(&b.label).then(a.id.cmp(&b.id)));
+    mics.dedup_by(|a, b| a.id == b.id);
+    let labels: Vec<String> = mics.iter().map(|m| m.label.clone()).collect();
+    for (i, m) in mics.iter_mut().enumerate() {
+        let n = labels[..i].iter().filter(|l| **l == m.label).count();
+        if n > 0 {
+            m.label = format!("{} ({})", m.label, n + 1);
+        }
+    }
+    mics
 }
 
-fn pick_device(host: &cpal::Host, name: &str) -> Option<cpal::Device> {
-    if !name.is_empty()
+/// Finds the device by id (or, for older configs, by label).
+fn pick_device(host: &cpal::Host, wanted: &str) -> Option<cpal::Device> {
+    if !wanted.is_empty()
         && let Ok(mut devices) = host.input_devices()
-        && let Some(d) = devices.find(|d| d.description().is_ok_and(|n| n.name() == name))
+        && let Some(d) = devices.find(|d| {
+            d.id().is_ok_and(|id| id.to_string() == wanted)
+                || d.description().is_ok_and(|n| n.name() == wanted)
+        })
     {
         return Some(d);
     }
-    if !name.is_empty() {
+    if !wanted.is_empty() {
         warn!(
-            device = name,
+            device = wanted,
             "selected microphone not found, using the default"
         );
     }

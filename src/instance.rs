@@ -7,7 +7,7 @@
 
 use ashpd::zbus::{self, fdo::RequestNameFlags, fdo::RequestNameReply};
 use tokio::sync::mpsc;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::{app::Command, paths::APP_ID};
 
@@ -56,8 +56,13 @@ pub async fn acquire(commands: mpsc::UnboundedSender<Command>) -> Result<Instanc
         }
         _ => {
             info!("murmur is already running; opening its settings");
-            conn.call_method(Some(APP_ID), OBJECT_PATH, Some(APP_ID), "Activate", &())
-                .await?;
+            let call = conn.call_method(Some(APP_ID), OBJECT_PATH, Some(APP_ID), "Activate", &());
+            // Never become a second daemon, even if the running one doesn't answer.
+            match tokio::time::timeout(std::time::Duration::from_secs(3), call).await {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => warn!(error = %e, "the running murmur didn't respond"),
+                Err(_) => warn!("the running murmur didn't respond in time"),
+            }
             Ok(Instance::AlreadyRunning)
         }
     }

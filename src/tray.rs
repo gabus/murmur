@@ -336,7 +336,7 @@ pub async fn run(
                     // Loading starts out looking like Listening (spec: icon switches immediately).
                     Status::Loading | Status::Listening => Shown::Listening(*level.borrow()),
                     Status::Waiting => Shown::Waiting,
-                    Status::Error(e) => Shown::Error(e),
+                    Status::Error(_, e) => Shown::Error(e),
                 };
                 handle.update(|t| t.shown = shown).await;
             }

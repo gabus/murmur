@@ -49,16 +49,28 @@ impl Config {
 
     pub fn load_from(path: &Path) -> Self {
         match std::fs::read_to_string(path) {
-            Ok(text) => toml::from_str(&text).unwrap_or_else(|e| {
-                warn!(error = %e, path = %path.display(), "invalid config, using defaults");
-                Self::default()
-            }),
+            Ok(text) => toml::from_str::<Self>(&text)
+                .map(Self::sanitized)
+                .unwrap_or_else(|e| {
+                    warn!(error = %e, path = %path.display(), "invalid config, using defaults");
+                    Self::default()
+                }),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::default(),
             Err(e) => {
                 warn!(error = %e, path = %path.display(), "cannot read config, using defaults");
                 Self::default()
             }
         }
+    }
+
+    /// Replaces out-of-range values from a hand-edited file with defaults.
+    fn sanitized(mut self) -> Self {
+        let d = Self::default();
+        if !self.pause_secs.is_finite() || !(0.3..=3.0).contains(&self.pause_secs) {
+            self.pause_secs = d.pause_secs;
+        }
+        self.idle_unload_minutes = self.idle_unload_minutes.min(24 * 60);
+        self
     }
 
     /// Writes atomically (temp file + rename).
@@ -97,6 +109,8 @@ mod tests {
         let partial = Config::load_from(&path);
         assert_eq!(partial.model, "x");
         assert_eq!(partial.idle_unload_minutes, 10);
+        std::fs::write(&path, "pause_secs = nan\n").expect("write");
+        assert_eq!(Config::load_from(&path).pause_secs, 0.8);
         std::fs::write(&path, "this is not toml").expect("write");
         assert_eq!(Config::load_from(&path), Config::default());
         let _ = std::fs::remove_dir_all(&dir);
