@@ -11,7 +11,7 @@
 
 <p align="center">
   <img alt="Wayland only" src="https://img.shields.io/badge/Wayland-only-0ea5a4">
-  <img alt="Flatpak" src="https://img.shields.io/badge/install-Flatpak-2563eb">
+  <a href="https://gabus.github.io/murmur/"><img alt="Install: Flatpak" src="https://img.shields.io/badge/install-Flatpak-2563eb"></a>
   <img alt="License: GPL-3.0-or-later" src="https://img.shields.io/badge/license-GPL--3.0--or--later-555">
 </p>
 
@@ -38,6 +38,15 @@
 
 > **Status:** alpha, [v0.1.0](https://github.com/gabus/murmur/releases/tag/v0.1.0) released 2026-11-11. Works on KDE Plasma 6 and GNOME 50.
 
+## Install
+
+```sh
+flatpak install --user https://gabus.github.io/murmur/murmur.flatpakref
+```
+
+Or click **Install** on the [project page](https://gabus.github.io/murmur/) to open it in Discover
+or GNOME Software. Check [what a distro must have](#what-a-distro-must-have) first.
+
 ## Why Murmur
 
 | | |
@@ -61,16 +70,7 @@ flowchart LR
 Typed words are never changed afterwards, so nothing breaks if you move the cursor or type
 yourself.
 
-## Install
-
-```sh
-flatpak install --user https://gabus.github.io/murmur/murmur.flatpakref
-```
-
-Or open `murmur.flatpakref` from the [project page](https://gabus.github.io/murmur/) in Discover
-or GNOME Software.
-
-### What a distro must have
+## What a distro must have
 
 Murmur doesn't depend on a particular desktop, only on these parts. Settings → **Your system**
 checks each of them on your computer and says what's missing.
