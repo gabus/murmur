@@ -7,20 +7,26 @@ do them (D-004: Claude never pushes).
 
 ## One-time setup
 
-1. **Push the repository** to `github.com/gabus/murmur` (public).
-2. **Create a signing key** used only for the Flatpak repo, on your machine:
+1. **Push the repository** to `github.com/gabus/murmur` and make it **public** (Settings →
+   General → Danger Zone → Change visibility). Pages on a free plan, the install link and the
+   store screenshots (`raw.githubusercontent.com`) all need a public repo.
+2. **Create a signing key** used only for the Flatpak repo, on your machine. It has **no
+   passphrase**: the workflow signs unattended (`gpg --batch`), and a passphrase makes it fail.
    ```sh
-   gpg --quick-gen-key "murmur Flatpak repo <you@example.org>" rsa4096 sign never
-   gpg --list-secret-keys --keyid-format long      # note the key id
+   gpg --batch --passphrase '' --quick-gen-key "Murmur Flatpak repo" rsa4096 sign never
+   gpg --list-secret-keys --keyid-format long "Murmur Flatpak repo"   # the key id is after rsa4096/
    gpg --armor --export-secret-keys <KEYID> > murmur-repo-key.asc
    ```
-   Keep `murmur-repo-key.asc` safe. Users' Flatpak installs trust this key's public half
-   forever, so losing it means asking everyone to reinstall.
+   Keep `murmur-repo-key.asc` safe (offline). Users' Flatpak installs trust this key's public
+   half forever, so losing it means asking everyone to reinstall.
 3. **Add it as a secret:** GitHub → Settings → Secrets and variables → Actions → New
    repository secret, named `FLATPAK_GPG_KEY`, with the contents of `murmur-repo-key.asc`.
    Then delete the file from disk, or store it offline.
 4. **Enable Pages:** GitHub → Settings → Pages → Build and deployment → Source: **GitHub
    Actions**.
+5. **Let tags deploy:** GitHub → Settings → Environments → **github-pages** → Deployment
+   branches and tags → Add deployment branch or tag rule → type **Tag**, pattern `v*`. By
+   default only `main` may deploy to Pages, and the release runs from a tag.
 
 ## Each release
 

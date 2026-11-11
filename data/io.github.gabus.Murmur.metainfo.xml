@@ -71,9 +71,14 @@
     </screenshot>
   </screenshots>
   <releases>
-    <release version="0.1.0" date="2026-11-10" type="development">
+    <release version="0.1.0" date="2026-11-11" type="stable">
       <description>
-        <p>First development build.</p>
+        <p>First release.</p>
+        <ul>
+          <li>Dictate into any app on Wayland, about a second behind your voice</li>
+          <li>Speech recognition on your computer: Parakeet v3 (25 languages) or Moonshine base (English)</li>
+          <li>One-page setup, and Settings that shows what your system provides</li>
+        </ul>
       </description>
     </release>
   </releases>
