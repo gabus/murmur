@@ -29,19 +29,13 @@
     <p>What a distro must have:</p>
     <ul>
       <li>A Wayland session</li>
-      <li>KDE Plasma 6.1 or later, or GNOME 48 or later</li>
-      <li>xdg-desktop-portal with the KDE or GNOME backend (usually installed with the desktop)</li>
+      <li>xdg-desktop-portal 1.18 or later, with a backend that provides the GlobalShortcuts, RemoteDesktop and Clipboard portals (for example xdg-desktop-portal-kde, or xdg-desktop-portal-gnome 48 or later)</li>
+      <li>A compositor with input emulation through libei (for example KWin 6.1 or later, or Mutter 46 or later)</li>
       <li>PipeWire or PulseAudio</li>
-      <li>An x86_64 computer</li>
-      <li>On GNOME, the AppIndicator extension for the tray icon (dictation works without it)</li>
+      <li>An x86_64 computer (no ARM build yet)</li>
+      <li>Optional: a system tray (on GNOME, the AppIndicator extension)</li>
     </ul>
-    <p>Not supported yet:</p>
-    <ul>
-      <li>X11 sessions</li>
-      <li>Sway</li>
-      <li>Hyprland (untested)</li>
-      <li>ARM computers</li>
-    </ul>
+    <p>Settings shows which of these your system has.</p>
   </description>
 
   <launchable type="desktop-id">io.github.gabus.Murmur.desktop</launchable>

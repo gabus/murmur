@@ -78,6 +78,10 @@ pub struct SystemReport {
     #[serde(default)]
     pub remote_desktop_keyboard: bool,
     pub clipboard: Option<u32>,
+    #[serde(default)]
+    pub notification: Option<u32>,
+    #[serde(default)]
+    pub background: Option<u32>,
     /// A PipeWire or PulseAudio server accepted a connection.
     pub audio_server: bool,
     /// Microphones the audio server offers (monitors of outputs excluded).

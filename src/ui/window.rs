@@ -517,6 +517,7 @@ fn system_checks(checks: &[super::checks::Check]) -> ModelRc<c::SystemCheck> {
         .iter()
         .map(|ch| c::SystemCheck {
             title: text(ch.title),
+            purpose: text(ch.purpose),
             ok: ch.ok,
             pending: ch.pending,
             detail: text(&ch.detail),

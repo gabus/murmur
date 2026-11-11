@@ -417,8 +417,9 @@ pub struct SettingsView {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SystemView {
     pub checks: Vec<Check>,
-    /// "All good", "2 problems" or "Checking…".
+    /// "All found", "2 missing" or "Checking…".
     pub summary: String,
+    /// Everything Murmur needs was found (optional parts aside).
     pub all_ok: bool,
     pub checking: bool,
 }
@@ -435,7 +436,7 @@ fn system(state: &UiState) -> SystemView {
     let checks = checks::list(report, &state.typing);
     SystemView {
         summary: checks::summary(&checks),
-        all_ok: checks.iter().all(|c| c.ok),
+        all_ok: checks::needed_found(&checks),
         checks,
         checking: false,
     }

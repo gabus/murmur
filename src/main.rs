@@ -49,13 +49,20 @@ fn check() -> Result<()> {
     let report = rt.block_on(murmur::syscheck::probe());
     let list = checks::list(&report, &TypingState::Unknown);
     for c in &list {
-        println!("{} {}", if c.ok { "✓" } else { "✗" }, c.title);
+        let mark = if c.pending {
+            "…"
+        } else if c.ok {
+            "✓"
+        } else {
+            "✗"
+        };
+        println!("{mark} {:<26} {}", c.title, c.purpose);
         if !c.detail.is_empty() {
             println!("    {}", c.detail);
         }
     }
     println!("{}", checks::summary(&list));
-    if list.iter().all(|c| c.ok) {
+    if checks::needed_found(&list) {
         Ok(())
     } else {
         std::process::exit(1)

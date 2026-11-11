@@ -71,6 +71,8 @@ pub fn system_ok() -> SystemReport {
         remote_desktop: Some(2),
         remote_desktop_keyboard: true,
         clipboard: Some(1),
+        notification: Some(2),
+        background: Some(2),
         audio_server: true,
         microphones: 2,
         tray: true,

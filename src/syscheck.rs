@@ -99,12 +99,14 @@ pub async fn probe_with_microphones() -> (SystemReport, Option<Vec<Mic>>) {
     let audio = tokio::task::spawn_blocking(audio::probe_server);
     if let Some(conn) = timed("session bus", zbus::Connection::session()).await {
         const RD: &str = "org.freedesktop.portal.RemoteDesktop";
-        let (answers, shortcuts, remote, devices, clipboard, tray) = tokio::join!(
+        let (answers, shortcuts, remote, devices, clipboard, notification, background, tray) = tokio::join!(
             portal_answers(&conn),
             portal_u32(&conn, "org.freedesktop.portal.GlobalShortcuts", "version"),
             portal_u32(&conn, RD, "version"),
             portal_u32(&conn, RD, "AvailableDeviceTypes"),
             portal_u32(&conn, "org.freedesktop.portal.Clipboard", "version"),
+            portal_u32(&conn, "org.freedesktop.portal.Notification", "version"),
+            portal_u32(&conn, "org.freedesktop.portal.Background", "version"),
             tray_running(&conn),
         );
         report.portal = answers;
@@ -112,6 +114,8 @@ pub async fn probe_with_microphones() -> (SystemReport, Option<Vec<Mic>>) {
         report.remote_desktop = remote;
         report.remote_desktop_keyboard = devices.is_some_and(|d| d & KEYBOARD != 0);
         report.clipboard = clipboard;
+        report.notification = notification;
+        report.background = background;
         report.tray = tray;
     }
     // A hung audio server counts as none; its thread is left to finish on its own.

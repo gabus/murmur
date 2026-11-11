@@ -135,7 +135,11 @@ async fn portal_gnome_scenarios() {
         "{report:?}"
     );
     assert!(
-        report.remote_desktop_keyboard && report.clipboard.is_some() && !report.tray,
+        report.remote_desktop_keyboard
+            && report.clipboard.is_some()
+            && report.notification.is_some()
+            && report.background.is_some()
+            && !report.tray,
         "{report:?}"
     );
     wait_for("no screen sharing", WAIT, || async {

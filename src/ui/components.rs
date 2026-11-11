@@ -16,6 +16,7 @@ slint::slint! {
     // One line of Settings → Your system (D-019).
     export struct SystemCheck {
         title: string,
+        purpose: string,
         ok: bool,
         pending: bool,
         detail: string,
@@ -147,13 +148,19 @@ slint::slint! {
             spacing: 2px;
             Text {
                 text: root.check.title;
-                color: root.check.pending ? Theme.muted : Palette.foreground;
+                color: Palette.foreground;
+                wrap: word-wrap;
+            }
+            Text {
+                text: root.check.purpose;
+                font-size: Theme.small-size;
+                color: Theme.muted;
                 wrap: word-wrap;
             }
             if root.check.detail != "": Text {
                 text: root.check.detail;
                 font-size: Theme.small-size;
-                color: Theme.danger;
+                color: root.check.pending ? Theme.muted : Theme.danger;
                 wrap: word-wrap;
             }
         }

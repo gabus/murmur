@@ -44,6 +44,8 @@ list with key events (Down, Up, Return, Escape) and checks which model is picked
   a `changed height` callback whenever the compositor sets a size, request the content's size
   again. The checklist also shows its lines (pending) while the check runs, so the window opens
   at its final size and doesn't grow downward off a short screen.
+- Open: with the ten-part checklist (D-022), Settings is about 800 px tall. That fits 1080p at
+  125 % and up, but not a 768 px tall screen. The window has no scroll area yet.
 - Popups (combo box lists, the model list) are drawn inside the window on Wayland, so they must
   fit in it. The model list opens above its button when there's no room below.
 - The Fluent widgets' SVG icons (check box tick, combo box arrow) need `i-slint-core/svg`. The

@@ -72,26 +72,26 @@ or GNOME Software.
 
 ### What a distro must have
 
-| | |
-|---|---|
-| Wayland session | X11 isn't supported |
-| KDE Plasma 6.1+ or GNOME 48+ | |
-| xdg-desktop-portal with the KDE or GNOME backend | Usually installed with the desktop |
-| PipeWire or PulseAudio | For the microphone |
-| x86_64 computer | No ARM build yet |
-| A system tray *(optional)* | On GNOME: the AppIndicator extension |
+Murmur doesn't depend on a particular desktop, only on these parts. Settings → **Your system**
+checks each of them on your computer and says what's missing.
 
-Not sure? Settings → **Your system** checks each of these on your computer and says what's
-missing.
+| Part | Murmur uses it for | Provided by, for example |
+|---|---|---|
+| Wayland compositor | Everything: X11 isn't supported | KWin, Mutter, Hyprland |
+| xdg-desktop-portal 1.18+ | Talking to the desktop | the `xdg-desktop-portal` package |
+| GlobalShortcuts portal | The start/stop key | xdg-desktop-portal-kde, -gnome 48+, -hyprland |
+| RemoteDesktop portal | Permission to type | xdg-desktop-portal-kde, -gnome |
+| Input emulation (libei) | Typing into apps | KWin 6.1+, Mutter 46+ |
+| Clipboard portal | Characters not on your keyboard layout | xdg-desktop-portal-kde, -gnome |
+| PipeWire or PulseAudio | The microphone | `pipewire-pulse`, `pulseaudio` |
+| x86_64 computer | Running the app | no ARM build yet |
+| System tray host *(optional)* | The tray icon | Plasma's panel, GNOME's AppIndicator extension, waybar |
+| Notification portal *(optional)* | Error messages | xdg-desktop-portal-kde, -gnome |
+| Background portal *(optional)* | Start at login | xdg-desktop-portal-kde, -gnome |
 
-### Supported desktops
-
-| Desktop | Shortcut | Typing | Tray | |
-|---|:-:|:-:|:-:|---|
-| **KDE Plasma 6.1+** | ✅ Super+H | ✅ | ✅ | Main target |
-| **GNOME 48+** | ✅ Super+Alt+H | ✅ | ⚠️ needs AppIndicator | Change the shortcut in GNOME Settings. Allow *Remote Interaction* when asked |
-| Hyprland | ✅ | ❓ untested | ✅ with a bar | |
-| Sway | ❌ | ❓ | ✅ | Not supported |
+**Tested on:** KDE Plasma 6.7 and 6.8 (everything found) and GNOME 50 (everything but the tray
+until the AppIndicator extension is installed). On GNOME the suggested key is Super+Alt+H, it's
+changed in GNOME Settings, and the permission dialog needs *Allow Remote Interaction* switched on.
 
 > **About this project:** Murmur's code, tests and packaging were written with AI assistance
 > (Anthropic's Claude), directed and reviewed by the maintainer. It's distributed from its own
@@ -172,10 +172,10 @@ Then the window closes and Murmur lives in the tray. **Settings…** in the tray
 window with the same look ([D-010](docs/decisions.md)):
 
 - shortcut, microphone, model, the pause that ends a sentence, idle unload time, start at login;
-- **Your system** ([D-019](docs/decisions.md)): Wayland session, Plasma 6.1+ or GNOME 48+, desktop
-  portal, PipeWire or PulseAudio, global shortcut, typing, clipboard and tray icon, each with a
-  green tick, or a red cross and the reason. It's checked read-only each time the window opens
-  (no dialogs).
+- **Your system** ([D-019](docs/decisions.md), [D-022](docs/decisions.md)): each part from
+  *What a distro must have*, with what Murmur uses it for and a green tick, or a red cross and
+  what to install. Checked read-only each time the window opens (no dialogs). Input emulation is
+  known only once Murmur connects to type, so until typing is allowed it shows as pending.
 
 </details>
 

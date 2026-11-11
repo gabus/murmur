@@ -208,3 +208,17 @@ something is missing.
 - The streaming engine (`src/asr/light.rs`), its punctuation model and `examples/light_probe`
   are removed. A config that names a dropped model falls back to the default (with a warning).
 - Spec: README → Supported models.
+
+### D-022 · 2026-11-11 · maintainer. Supersedes the lists in D-018 and D-019
+**The checklist, the README and the store description list the parts Murmur depends on, not
+features and not desktops.** Parts: Wayland compositor, xdg-desktop-portal 1.18+, the
+GlobalShortcuts, RemoteDesktop and Clipboard portals, input emulation (libei) in the
+compositor, PipeWire or PulseAudio, x86_64. Optional: a system tray host, and the Notification
+and Background portals. Each line says what Murmur uses the part for, and when one is missing,
+what to install.
+- Why: "Typing" or "Plasma 6.1+" don't tell anyone what's missing. Plasma isn't the dependency:
+  its portal backend and KWin's libei support are. No desktop is excluded on assumption
+  (Hyprland, Sway). Any desktop that provides the parts works, and the checklist shows it.
+- Input emulation can't be probed without a typing session. It shows as pending until Murmur
+  connects, which happens at startup once typing has been allowed.
+- Spec: README → What a distro must have; Specification → First run and Settings.

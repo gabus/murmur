@@ -65,7 +65,7 @@ Goal: `murmur` daemon, hotkey toggles listening, phrases get typed.
 - [x] Config file `$XDG_CONFIG_HOME/murmur/config.toml` (model, pause, idle unload, microphone, autostart, paste keys; spacing is fixed by D-002)
 - [x] First-run setup window: shortcut → typing permission → model download (one time only); D-009, verified in a nested KWin with the real daemon
 - [x] Settings window (D-010)
-- [x] Settings → Your system: distro requirements checklist with tick/cross and reasons, plus `murmur --check` (D-019/D-020; KDE real session ✅ in the toolbox and in the Flatpak, GNOME 50 headless ✅; `docs/portal-findings.md`)
+- [x] Settings → Your system: checklist of the parts Murmur depends on (D-022), each with its purpose, tick/cross and what to install, plus `murmur --check` (D-019/D-020; KDE real session ✅ in the toolbox and in the Flatpak, GNOME 50 headless ✅; `docs/portal-findings.md`)
 - [x] Verify the paste fallback against the real Clipboard portal (KDE ✅ in a nested KWin, `tests/portal_nested_kde.rs`; GNOME ✅ headless 50.6, `tests/portal_headless_gnome.rs`)
 - [x] Investigate cpal PulseAudio host failing inside the Flatpak → empty auth cookie; manifest ships a zero cookie via PULSE_COOKIE (verified)
 - [x] Left-click tray icon toggles listening; right-click opens menu
