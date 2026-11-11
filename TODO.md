@@ -84,14 +84,14 @@ Goal: `murmur` daemon, hotkey toggles listening, phrases get typed.
 - [x] AppStream metainfo, `.desktop` file, icons (scalable + 128px)
 - [x] Minimal permissions (see README); no `--device=all`, no `--filesystem=host`
 - [x] CI: GitHub Actions building the Flatpak bundle on push (`.github/workflows/flatpak.yml`; not run yet)
-- [ ] Run the CI workflow once on GitHub and check the uploaded bundle
+- [x] Run the CI workflow once on GitHub and check the uploaded bundle (passes on the public repo's runners, 2026-11-11)
 - [ ] GNOME on a real session (VM): Super+Alt+H with gnome-settings-daemon, *Allow…* in the setup window, the Flatpak, bindings and tokens across re-login
 - [ ] Build and test the Flatpak on aarch64 (Flathub builds x86_64 and aarch64)
 - [x] License chosen and added (GPL-3.0-or-later, D-013)
 
 ## Stage 6: Release
 
-- [ ] Tag `v0.1.0`; GitHub release with `.flatpak` bundle + `.flatpakref`: automated by `.github/workflows/release.yml` (self-hosted repo on Pages, D-015); maintainer does the one-time setup and pushes the tag (`docs/release.md`)
+- [x] Tag `v0.1.0`: released 2026-11-11 (signed repo on https://gabus.github.io/murmur/, GitHub Release with the bundle). Installing from the live `.flatpakref` was verified in a throwaway Flatpak dir: signature, AppStream data, version 0.1.0
 - [x] Install instructions in README
 - [x] Screenshots (docs/screenshots, metainfo); a short GIF is still open
 - [ ] (Optional, later; D-015) Submit to Flathub; iterate on review. Flathub's generative-AI policy bans AI-generated or AI-assisted content in Flathub manifests and AI-opened submission PRs, so the maintainer writes those (see `docs/packaging.md`)
