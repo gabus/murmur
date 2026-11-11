@@ -10,7 +10,6 @@
 </p>
 
 <p align="center">
-  <img alt="Status: alpha" src="https://img.shields.io/badge/status-alpha-orange">
   <img alt="Wayland only" src="https://img.shields.io/badge/Wayland-only-0ea5a4">
   <img alt="Flatpak" src="https://img.shields.io/badge/install-Flatpak-2563eb">
   <img alt="License: GPL-3.0-or-later" src="https://img.shields.io/badge/license-GPL--3.0--or--later-555">
@@ -37,34 +36,30 @@
   </tr>
 </table>
 
-> **Status:** alpha, not released yet. Used daily on KDE Plasma 6, verified on GNOME 50
-> (headless, against its real portals). Progress: [TODO.md](TODO.md).
+> **Status:** alpha, not released yet. Works on KDE Plasma 6 and GNOME 50.
 
 ## Why Murmur
 
 | | |
 |---|---|
-| **Like Mac dictation** | One key starts it, the same key stops it. Words appear as you speak. |
-| **Private** | Speech recognition runs on your computer. Audio and text never leave it. The only network use is the one-time model download. No telemetry. |
-| **Works in every app** | Types through the desktop's portals, so any focused text field gets the words. |
-| **Stays out of the way** | No popups or sounds. The tray icon is the only feedback. Keep typing and clicking while it listens. |
-| **Light when idle** | The mic is open only while listening. The model loads on demand and is freed after 10 idle minutes. |
-| **One-click install** | A Flatpak. No compilers, no `sudo`, no `input` group, no udev rules ([D-015](docs/decisions.md)). |
+| **Like Mac dictation** | One key to start, the same key to stop. |
+| **Private** | Runs on your computer. Nothing you say is sent anywhere. |
+| **Any app** | Types wherever your cursor is. |
+| **Quiet** | No popups, no sounds. Keep typing while it listens. |
+| **Light** | Mic and model are released when you're not dictating. |
+| **Easy install** | One Flatpak. No `sudo`, no setup scripts. |
 
 ## How it works
 
 ```mermaid
 flowchart LR
-    key(["Shortcut<br/>Super+H"]) --> mic["Microphone<br/>open only while listening"]
-    mic --> asr["Parakeet re-reads<br/>the sentence every 0.5 s"]
-    asr --> agree{"Two runs<br/>agree?"}
-    agree -->|"yes: about 1 s behind your voice"| type["Typed as keystrokes<br/>through the portal"]
-    agree -->|not yet| asr
-    type --> app(["The app<br/>you're using"])
+    key(["Press<br/>Super+H"]) --> talk["Talk"]
+    talk --> rec["Recognized on<br/>your computer"]
+    rec -->|"about 1 s behind your voice"| app(["Typed into<br/>your app"])
 ```
 
-Typed words are never changed afterwards: no backspacing, so nothing breaks if you move the
-cursor or type yourself.
+Typed words are never changed afterwards, so nothing breaks if you move the cursor or type
+yourself.
 
 ## Install
 
@@ -72,77 +67,76 @@ cursor or type yourself.
 flatpak install --user https://gabus.github.io/murmur/murmur.flatpakref
 ```
 
-Or open `murmur.flatpakref` from the [project page](https://gabus.github.io/murmur/) or the
-[latest release](https://github.com/gabus/murmur/releases) in Discover or GNOME Software.
+Or open `murmur.flatpakref` from the [project page](https://gabus.github.io/murmur/) in Discover
+or GNOME Software.
 
 ### What a distro must have
 
-| Requirement | Why | Check |
-|---|---|---|
-| Wayland session | Murmur has no X11 code | `echo $XDG_SESSION_TYPE` |
-| KDE Plasma 6.1+ or GNOME 48+ | Typing needs the compositor's EIS support | `plasmashell --version` |
-| xdg-desktop-portal + the KDE or GNOME backend | Shortcut, typing permission, clipboard, notifications, autostart | `flatpak run io.github.gabus.Murmur --check` |
-| PipeWire or PulseAudio | Microphone | `pactl info` |
-| x86_64 | Only build so far (ARM not yet) | `uname -m` |
-| Tray host *(optional)* | Icon and menu. On GNOME: the AppIndicator extension | |
+| | |
+|---|---|
+| Wayland session | X11 isn't supported |
+| KDE Plasma 6.1+ or GNOME 48+ | |
+| xdg-desktop-portal with the KDE or GNOME backend | Usually installed with the desktop |
+| PipeWire or PulseAudio | For the microphone |
+| x86_64 computer | No ARM build yet |
+| A system tray *(optional)* | On GNOME: the AppIndicator extension |
 
-Settings → **Your system** checks all of this on your machine, with a ✓ or ✗ and the reason
-([D-019](docs/decisions.md)). `murmur --check` prints the same list in a terminal
-([D-020](docs/decisions.md)).
+Not sure? Settings → **Your system** checks each of these on your computer and says what's
+missing.
 
 ### Supported desktops
 
 | Desktop | Shortcut | Typing | Tray | |
 |---|:-:|:-:|:-:|---|
-| **KDE Plasma 6.1+** | ✅ Super+H | ✅ | ✅ | Primary target. Tested on 6.7 and 6.8 |
-| **GNOME 48+** | ✅ Super+Alt+H | ✅ | ⚠️ AppIndicator | Change the shortcut in GNOME Settings (portal v1). Switch on *Allow Remote Interaction* in the permission dialog. An orange *Stop Screen Sharing* button shows while Murmur's session is open. Tested headless on 50.6 |
-| Hyprland | ✅ | ❓ to verify | ✅ with a bar | |
-| Sway / wlroots | ❌ no GlobalShortcuts portal | ❓ | ✅ | Unsupported |
+| **KDE Plasma 6.1+** | ✅ Super+H | ✅ | ✅ | Main target |
+| **GNOME 48+** | ✅ Super+Alt+H | ✅ | ⚠️ needs AppIndicator | Change the shortcut in GNOME Settings. Allow *Remote Interaction* when asked |
+| Hyprland | ✅ | ❓ untested | ✅ with a bar | |
+| Sway | ❌ | ❓ | ✅ | Not supported |
 
 > **About this project:** Murmur's code, tests and packaging were written with AI assistance
 > (Anthropic's Claude), directed and reviewed by the maintainer. It's distributed from its own
-> Flatpak repo, not Flathub ([D-015](docs/decisions.md)).
+> Flatpak repo, not Flathub.
 
 ## Using it
 
 | You | Murmur |
 |---|---|
-| Press the shortcut | The icon turns red at once and the mic opens. If the model isn't loaded yet, it loads while your audio is buffered: nothing is lost. |
-| Speak | Words appear at the cursor about 1 second behind your voice. The icon follows your voice level. |
-| Pause | The last words and the sentence's final punctuation are typed. |
-| Type, click, switch apps | Nothing changes. The next words go wherever the cursor is. |
-| Press the shortcut again | The phrase in progress is finished, then the mic closes. |
+| Press the shortcut | The icon turns red and the mic opens. Nothing you say is lost, even on the first press. |
+| Speak | Words appear at the cursor about a second behind your voice. |
+| Pause | The sentence is finished, with its final punctuation. |
+| Type, click, switch apps | Keeps listening. The next words go wherever the cursor is. |
+| Press the shortcut again | Finishes the last words and closes the mic. |
 | Click the tray icon | Same as the shortcut. Right-click for the menu. |
 
 ### Tray icon
 
 | <img src="docs/screenshots/tray-idle.png" width="32" alt=""> | <img src="docs/screenshots/tray-listening-quiet.png" width="32" alt=""> <img src="docs/screenshots/tray-listening-loud.png" width="32" alt=""> | <img src="docs/screenshots/tray-loading.png" width="32" alt=""> | <img src="docs/screenshots/tray-error.png" width="32" alt=""> |
 |:-:|:-:|:-:|:-:|
-| **Idle**<br><sub>the Wave M in the panel's colour</sub> | **Listening**<br><sub>red; the wave grows with your voice</sub> | **Loading / Waiting**<br><sub>dimmed pulse (after ~300 ms); Waiting while you hold Ctrl/Alt/Super</sub> | **Error**<br><sub>amber badge; the tooltip says what's wrong</sub> |
+| **Idle** | **Listening**<br><sub>grows with your voice</sub> | **Loading or waiting**<br><sub>waiting: let go of Ctrl/Alt/Super</sub> | **Problem**<br><sub>hover for details</sub> |
 
 ## Speech models
 
 | Model | Download | Languages | |
 |---|---|---|---|
-| **Parakeet TDT 0.6B v3** (int8) | 490 MB | 25, detected automatically | **Default.** Most accurate. Punctuation and capitals built in |
-| **Moonshine base v2** | 110 MB | English | Lighter. Punctuation and capitals built in. No timestamps, so words are aligned by order |
+| **Parakeet v3** | 490 MB | 25, detected automatically | **Default.** Most accurate |
+| **Moonshine base** | 110 MB | English | Smaller and lighter |
 
-Parakeet's 25 languages:
+Both add punctuation and capitals. The model downloads during first-run setup; switch any time
+in Settings or the tray menu.
 
-| | | | | |
-|---|---|---|---|---|
-| Bulgarian `bg` | Croatian `hr` | Czech `cs` | Danish `da` | Dutch `nl` |
-| English `en` | Estonian `et` | Finnish `fi` | French `fr` | German `de` |
-| Greek `el` | Hungarian `hu` | Italian `it` | Latvian `lv` | Lithuanian `lt` |
-| Maltese `mt` | Polish `pl` | Portuguese `pt` | Romanian `ro` | Russian `ru` |
-| Slovak `sk` | Slovenian `sl` | Spanish `es` | Swedish `sv` | Ukrainian `uk` |
+Parakeet understands:
 
-Models download on demand from the sherpa-onnx releases, with sizes and checksums pinned in
-`src/models.rs` ([D-021](docs/decisions.md)). Measurements: [docs/benchmarks.md](docs/benchmarks.md).
+<table>
+  <tr><td>🇧🇬 Bulgarian</td><td>🇭🇷 Croatian</td><td>🇨🇿 Czech</td><td>🇩🇰 Danish</td><td>🇳🇱 Dutch</td></tr>
+  <tr><td>🇬🇧 English</td><td>🇪🇪 Estonian</td><td>🇫🇮 Finnish</td><td>🇫🇷 French</td><td>🇩🇪 German</td></tr>
+  <tr><td>🇬🇷 Greek</td><td>🇭🇺 Hungarian</td><td>🇮🇹 Italian</td><td>🇱🇻 Latvian</td><td>🇱🇹 Lithuanian</td></tr>
+  <tr><td>🇲🇹 Maltese</td><td>🇵🇱 Polish</td><td>🇵🇹 Portuguese</td><td>🇷🇴 Romanian</td><td>🇷🇺 Russian</td></tr>
+  <tr><td>🇸🇰 Slovak</td><td>🇸🇮 Slovenian</td><td>🇪🇸 Spanish</td><td>🇸🇪 Swedish</td><td>🇺🇦 Ukrainian</td></tr>
+</table>
 
 ## Specification
 
-The rules the code follows. Each section expands.
+For contributors: the rules the code follows ([decision log](docs/decisions.md), [benchmarks](docs/benchmarks.md)). Each section expands.
 
 <details>
 <summary><b>Principles</b></summary>

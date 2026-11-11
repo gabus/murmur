@@ -21,7 +21,7 @@
       download of a speech model. No audio or text leaves your machine.
     </p>
     <ul>
-      <li>Works in every app: the shortcut and typing go through the desktop's portals</li>
+      <li>Works in every app: words are typed wherever your cursor is</li>
       <li>Punctuation and capitalization from the default model, in 25 European languages</li>
       <li>A tray icon shows when it is listening, and the microphone is open only while dictating</li>
       <li>The speech model is loaded on demand and freed again when idle</li>
@@ -30,17 +30,17 @@
     <ul>
       <li>A Wayland session</li>
       <li>KDE Plasma 6.1 or later, or GNOME 48 or later</li>
-      <li>xdg-desktop-portal with the KDE or GNOME backend</li>
+      <li>xdg-desktop-portal with the KDE or GNOME backend (usually installed with the desktop)</li>
       <li>PipeWire or PulseAudio</li>
-      <li>An x86_64 processor</li>
+      <li>An x86_64 computer</li>
       <li>On GNOME, the AppIndicator extension for the tray icon (dictation works without it)</li>
     </ul>
     <p>Not supported yet:</p>
     <ul>
       <li>X11 sessions</li>
-      <li>Sway and other wlroots desktops, which have no global shortcuts portal</li>
+      <li>Sway</li>
       <li>Hyprland (untested)</li>
-      <li>ARM (aarch64) computers</li>
+      <li>ARM computers</li>
     </ul>
   </description>
 
