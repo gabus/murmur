@@ -28,18 +28,6 @@ pub fn models() -> Vec<ModelRow> {
             "Lighter · English",
             "110 MB",
         ),
-        row(
-            "moonshine-tiny-en",
-            "Moonshine tiny",
-            "Lightest · English",
-            "30 MB",
-        ),
-        row(
-            "zipformer-light-en",
-            "Light",
-            "Lowest CPU · English · streaming",
-            "340 MB",
-        ),
     ];
     m[0].active = true;
     m
@@ -149,7 +137,6 @@ pub fn settings() -> UiState {
         "Built-in Audio Analog Stereo".into(),
     ];
     s.microphone = "Blue Yeti Analog Stereo".into();
-    s.models[2].installed = true;
     s.download = Some(DownloadRow {
         model_id: "moonshine-base-en".into(),
         percent: 62,

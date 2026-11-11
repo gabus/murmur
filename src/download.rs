@@ -240,12 +240,12 @@ mod network_tests {
 
     /// `cargo test --lib download::network_tests -- --ignored`
     #[tokio::test]
-    #[ignore = "downloads ~31 MB from GitHub"]
+    #[ignore = "downloads ~112 MB from GitHub"]
     async fn installs_a_real_model() {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let tmp = std::env::temp_dir().join(format!("murmur-dl-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
-        let model = models::find("moonshine-tiny-en").expect("registered");
+        let model = models::find("moonshine-base-en").expect("registered");
         let mut last = None;
         install(model, &tmp, |p| last = Some(p))
             .await

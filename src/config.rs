@@ -95,7 +95,7 @@ mod tests {
         let path = dir.join("config.toml");
         assert_eq!(Config::load_from(&path), Config::default());
         let c = Config {
-            model: "moonshine-tiny-en".into(),
+            model: "moonshine-base-en".into(),
             idle_unload_minutes: 3,
             setup_done: true,
             microphone: "USB mic".into(),

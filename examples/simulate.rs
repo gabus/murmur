@@ -24,13 +24,6 @@ fn transcriber(id: &str, threads: i32) -> anyhow::Result<Box<dyn Transcriber + S
     Ok(match m.kind {
         Kind::Parakeet => Box::new(Parakeet::load(&dir, threads)?),
         Kind::Moonshine => Box::new(Moonshine::load(&dir, threads)?),
-        // The light engine isn't a re-check transcriber; use Parakeet as reference.
-        Kind::Light => {
-            let p =
-                models::find(models::DEFAULT_MODEL).ok_or_else(|| anyhow::anyhow!("default"))?;
-            let pdir = p.dir(&paths::models_dir().ok_or_else(|| anyhow::anyhow!("no data dir"))?);
-            Box::new(Parakeet::load(&pdir, threads)?)
-        }
     })
 }
 
@@ -143,26 +136,16 @@ fn main() -> anyhow::Result<()> {
 
     let t = Instant::now();
     let info = models::find(&model).ok_or_else(|| anyhow::anyhow!("unknown model {model}"))?;
-    let mut engine: Box<dyn Engine> = if info.kind == Kind::Light {
-        models::load_engine(&models::LoadSpec {
-            model: info,
-            models_dir: models.clone(),
-            threads,
-            engine: cfg.clone(),
-            min_silence: 0.8,
-        })?
-    } else {
-        let vad = SileroVad::load(&models.join("silero_vad.onnx"), 0.8)?;
-        Box::new(RecheckEngine::new(
-            cfg.clone(),
-            Timed {
-                inner: transcriber(&model, threads)?,
-                runs: Vec::new(),
-                dump,
-            },
-            vad,
-        ))
-    };
+    let vad = SileroVad::load(&models.join("silero_vad.onnx"), 0.8)?;
+    let mut engine: Box<dyn Engine> = Box::new(RecheckEngine::new(
+        cfg.clone(),
+        Timed {
+            inner: transcriber(info.id, threads)?,
+            runs: Vec::new(),
+            dump,
+        },
+        vad,
+    ));
     println!(
         "load {:?}; audio {:.1}s; {cfg:?}",
         t.elapsed(),

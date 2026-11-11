@@ -592,7 +592,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let out = Outbox(tx);
         out.send(FromUi::AllowTyping);
-        out.send(FromUi::SelectModel("moonshine-tiny-en".into()));
+        out.send(FromUi::SelectModel("moonshine-base-en".into()));
         out.send(FromUi::SetupDone);
         out.end();
         out.send(FromUi::ChangeShortcut); // after End: not written
@@ -608,7 +608,7 @@ mod tests {
             msgs,
             [
                 FromUi::AllowTyping,
-                FromUi::SelectModel("moonshine-tiny-en".into()),
+                FromUi::SelectModel("moonshine-base-en".into()),
                 FromUi::SetupDone
             ]
         );

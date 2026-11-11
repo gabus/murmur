@@ -49,6 +49,9 @@ Normal-level speech is unchanged with AGC on.
 Input: eight synthesized sentences back to back, 43.5 s of continuous speech, release build,
 4 threads (Light: 2).
 
+Moonshine tiny and Light were dropped from the catalogue afterwards (D-021). Their rows stay as
+a record.
+
 | Model | Load | Peak RAM | CPU (decode / audio) | Avg lag | Notes |
 |---|---|---|---|---|---|
 | Parakeet v3 | 1.4 s | 1.1 GB | 26 % | 1.04 s | most accurate |
@@ -61,6 +64,6 @@ edge word held back.
 
 - Light engine **append-only check:** 0 violations over the corpus (the TODO item).
 - Rejected: the 20M Zipformer drops the first words of utterances, even when fed directly to
-  sherpa (`examples/light_probe`). The Kroko 2025 streaming model gives native punctuation
+  sherpa (`examples/light_probe`, since removed). The Kroko 2025 streaming model gives native punctuation
   and casing, but its license is unclear (D-008).
 - With an idle unload of 10 min, idle RAM drops back to the base daemon.

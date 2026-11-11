@@ -10,7 +10,6 @@ use crate::{
     asr::{
         AsrError, Engine,
         engine::{EngineConfig, RecheckEngine, Transcriber},
-        light::LightEngine,
         moonshine::Moonshine,
         parakeet::Parakeet,
     },
@@ -32,8 +31,6 @@ pub struct Asset {
 pub enum Kind {
     Parakeet,
     Moonshine,
-    /// Streaming Zipformer + punctuation model (`extras[0]`).
-    Light,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,8 +44,6 @@ pub struct ModelInfo {
     pub asset: Asset,
     /// Files inside `asset.name` that must exist.
     pub files: &'static [&'static str],
-    /// Further archives the model needs (e.g. a punctuation model).
-    pub extras: &'static [Asset],
 }
 
 /// Shared by every model: end-of-phrase detection.
@@ -84,7 +79,6 @@ pub static MODELS: &[ModelInfo] = &[
             "joiner.int8.onnx",
             "tokens.txt",
         ],
-        extras: &[],
     },
     ModelInfo {
         id: "moonshine-base-en",
@@ -106,67 +100,8 @@ pub static MODELS: &[ModelInfo] = &[
             "decoder_model_merged.ort",
             "tokens.txt",
         ],
-        extras: &[],
-    },
-    ModelInfo {
-        id: "moonshine-tiny-en",
-        name: "Moonshine tiny",
-        summary: "Lightest · English",
-        kind: Kind::Moonshine,
-        asset: Asset {
-            url: concat!(
-                "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/",
-                "sherpa-onnx-moonshine-tiny-en-quantized-2026-02-27.tar.bz2"
-            ),
-            bytes: 29_858_559,
-            sha256: "9ec31b342d8fa3240c3b81b8f82e1cf7e3ac467c93ca5a999b741d5887164f8d",
-            name: "sherpa-onnx-moonshine-tiny-en-quantized-2026-02-27",
-            archive: true,
-        },
-        files: &[
-            "encoder_model.ort",
-            "decoder_model_merged.ort",
-            "tokens.txt",
-        ],
-        extras: &[],
-    },
-    ModelInfo {
-        id: "zipformer-light-en",
-        name: "Light",
-        summary: "Lowest CPU · English · streaming",
-        kind: Kind::Light,
-        asset: Asset {
-            url: concat!(
-                "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/",
-                "sherpa-onnx-streaming-zipformer-en-2023-06-26.tar.bz2"
-            ),
-            bytes: 310_414_022,
-            sha256: "639e25b578e9e997131402199419c13a941f8e4e198e2da1ce57dbf5cf401282",
-            name: "sherpa-onnx-streaming-zipformer-en-2023-06-26",
-            archive: true,
-        },
-        // Order matters for the light engine: encoder, decoder, joiner, tokens.
-        files: &[
-            "encoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx",
-            "decoder-epoch-99-avg-1-chunk-16-left-128.onnx",
-            "joiner-epoch-99-avg-1-chunk-16-left-128.int8.onnx",
-            "tokens.txt",
-        ],
-        extras: &[PUNCT_EN],
     },
 ];
-
-/// English punctuation + casing for the light engine.
-pub const PUNCT_EN: Asset = Asset {
-    url: concat!(
-        "https://github.com/k2-fsa/sherpa-onnx/releases/download/punctuation-models/",
-        "sherpa-onnx-online-punct-en-2024-08-06.tar.bz2"
-    ),
-    bytes: 30_667_839,
-    sha256: "9f5e5a72c7d2829635bd074fce92b6bbd5b78da8a52e7ad8ed1be933f366b99d",
-    name: "sherpa-onnx-online-punct-en-2024-08-06",
-    archive: true,
-};
 
 /// Looks a model up by id.
 pub fn find(id: &str) -> Option<&'static ModelInfo> {
@@ -175,10 +110,7 @@ pub fn find(id: &str) -> Option<&'static ModelInfo> {
 
 /// Assets a model needs (the model itself plus shared ones).
 pub fn assets(model: &ModelInfo) -> Vec<&Asset> {
-    let mut v = vec![&model.asset];
-    v.extend(model.extras.iter());
-    v.push(&SILERO_VAD);
-    v
+    vec![&model.asset, &SILERO_VAD]
 }
 
 impl ModelInfo {
@@ -190,7 +122,6 @@ impl ModelInfo {
     pub fn is_installed(&self, models_dir: &Path) -> bool {
         let dir = self.dir(models_dir);
         self.files.iter().all(|f| dir.join(f).is_file())
-            && self.extras.iter().all(|a| asset_present(a, models_dir))
             && models_dir.join(SILERO_VAD.name).is_file()
     }
 
@@ -245,25 +176,6 @@ pub fn load_engine(spec: &LoadSpec) -> Result<Box<dyn Engine>, AsrError> {
     let transcriber: Box<dyn Transcriber + Send> = match spec.model.kind {
         Kind::Parakeet => Box::new(Parakeet::load(&dir, spec.threads)?),
         Kind::Moonshine => Box::new(Moonshine::load(&dir, spec.threads)?),
-        Kind::Light => {
-            let punct = spec
-                .model
-                .extras
-                .first()
-                .map(|a| spec.models_dir.join(a.name))
-                .ok_or_else(|| AsrError::UnknownModel(spec.model.id.into()))?;
-            let [encoder, decoder, joiner, tokens] = spec.model.files else {
-                return Err(AsrError::UnknownModel(spec.model.id.into()));
-            };
-            return Ok(Box::new(LightEngine::load(
-                &dir,
-                [encoder, decoder, joiner, tokens],
-                &punct,
-                vad,
-                spec.threads.min(2),
-                spec.engine.light_commit_delay,
-            )?));
-        }
     };
     Ok(Box::new(RecheckEngine::new(
         spec.engine.clone(),
@@ -288,9 +200,6 @@ mod tests {
         for m in MODELS {
             assert!(m.asset.url.starts_with(RELEASES), "{}", m.id);
             assert!(m.asset.url.ends_with(".tar.bz2") && m.asset.archive);
-            for e in m.extras {
-                assert!(e.url.starts_with(RELEASES) && e.url.contains(e.name));
-            }
             assert!(m.asset.url.contains(m.asset.name), "{}", m.id);
             assert_eq!(m.asset.sha256.len(), 64);
             assert!(!m.files.is_empty());
@@ -306,7 +215,7 @@ mod tests {
     #[test]
     fn installed_needs_all_files_and_vad() {
         let tmp = std::env::temp_dir().join(format!("murmur-models-{}", std::process::id()));
-        let m = find("moonshine-tiny-en").expect("registered");
+        let m = find("moonshine-base-en").expect("registered");
         let dir = m.dir(&tmp);
         std::fs::create_dir_all(&dir).expect("mkdir");
         assert!(!m.is_installed(&tmp));

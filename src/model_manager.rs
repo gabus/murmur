@@ -308,7 +308,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).expect("mkdir");
         fake_install(&tmp, "parakeet-v3");
-        fake_install(&tmp, "moonshine-tiny-en");
+        fake_install(&tmp, "moonshine-base-en");
         let template = LoadSpec {
             model: models::find(models::DEFAULT_MODEL).expect("default"),
             models_dir: tmp.clone(),
@@ -326,17 +326,17 @@ mod tests {
         assert_eq!(view.borrow().active, "parakeet-v3");
         assert_eq!(
             view.borrow().installed,
-            vec!["parakeet-v3", "moonshine-tiny-en"]
+            vec!["parakeet-v3", "moonshine-base-en"]
         );
-        let Outcome::Switch(spec) = m.select("moonshine-tiny-en") else {
+        let Outcome::Switch(spec) = m.select("moonshine-base-en") else {
             panic!("expected a switch");
         };
-        assert_eq!(spec.model.id, "moonshine-tiny-en");
-        assert_eq!(view.borrow().active, "moonshine-tiny-en");
+        assert_eq!(spec.model.id, "moonshine-base-en");
+        assert_eq!(view.borrow().active, "moonshine-base-en");
         let saved = Config::load_from(&tmp.join("config.toml"));
-        assert_eq!(saved.model, "moonshine-tiny-en");
+        assert_eq!(saved.model, "moonshine-base-en");
         // selecting the active model again changes nothing
-        assert!(matches!(m.select("moonshine-tiny-en"), Outcome::None));
+        assert!(matches!(m.select("moonshine-base-en"), Outcome::None));
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -344,7 +344,7 @@ mod tests {
     async fn the_active_model_cannot_be_deleted() {
         let (mut m, view, tmp) = manager("delete", Config::default());
         assert!(m.delete("parakeet-v3").await.is_err());
-        m.delete("moonshine-tiny-en").await.expect("delete");
+        m.delete("moonshine-base-en").await.expect("delete");
         assert_eq!(view.borrow().installed, vec!["parakeet-v3"]);
         let _ = std::fs::remove_dir_all(&tmp);
     }

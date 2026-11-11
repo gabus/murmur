@@ -1,25 +1,70 @@
-# Murmur
+<p align="center">
+  <img src="data/icons/io.github.gabus.Murmur.svg" width="96" alt="">
+</p>
 
-Live voice dictation for Linux on Wayland. Press a key, talk, and your words are
-typed into whatever app has focus. Press the key again to stop. You can keep
-typing normally the whole time.
+<h1 align="center">Murmur</h1>
 
-> **Status:** alpha. Dictation works end to end on KDE Plasma 6 (verified in automated nested-KWin
-> tests); Flatpak packaging and release are in progress. See [TODO.md](TODO.md).
+<p align="center">
+  <b>Live voice dictation for Linux on Wayland.</b><br>
+  Press a key, talk, and your words are typed into the app you're using.
+</p>
 
-## Goals
+<p align="center">
+  <img alt="Status: alpha" src="https://img.shields.io/badge/status-alpha-orange">
+  <img alt="Wayland only" src="https://img.shields.io/badge/Wayland-only-0ea5a4">
+  <img alt="Flatpak" src="https://img.shields.io/badge/install-Flatpak-2563eb">
+  <img alt="License: GPL-3.0-or-later" src="https://img.shields.io/badge/license-GPL--3.0--or--later-555">
+</p>
 
-- **Mac-like dictation.** Press a shortcut, then speak. You see the transcription
-  as you speak, and text appears in the focused app.
-- **One-click install.** Ships as a Flatpak (a `.flatpakref` from the project's own repo,
-  [D-015](docs/decisions.md)). No compilers, no `input` group, no udev rules, no `sudo`.
-- **Wayland only.** Uses xdg-desktop-portals and no X11 fallbacks.
-- **Lightweight.** Nothing is loaded while idle. The mic is opened only while
-  listening. The model is loaded on demand and unloaded after a period of
-  inactivity.
-- **Local and private.** All speech recognition runs on your machine. The only
-  network access is the one-time model download. No telemetry.
+<table>
+  <tr>
+    <td width="50%">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/setup-dark.png">
+        <img src="docs/screenshots/setup.png" alt="First-run setup: shortcut, typing permission, speech model">
+      </picture>
+    </td>
+    <td width="50%">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/settings-dark.png">
+        <img src="docs/screenshots/settings.png" alt="Settings, with the Your system checklist">
+      </picture>
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><sub>First run: one page, three things</sub></td>
+    <td align="center"><sub>Settings, with a check of what your system provides</sub></td>
+  </tr>
+</table>
 
+> **Status:** alpha, not released yet. Used daily on KDE Plasma 6, verified on GNOME 50
+> (headless, against its real portals). Progress: [TODO.md](TODO.md).
+
+## Why Murmur
+
+| | |
+|---|---|
+| **Like Mac dictation** | One key starts it, the same key stops it. Words appear as you speak. |
+| **Private** | Speech recognition runs on your computer. Audio and text never leave it. The only network use is the one-time model download. No telemetry. |
+| **Works in every app** | Types through the desktop's portals, so any focused text field gets the words. |
+| **Stays out of the way** | No popups or sounds. The tray icon is the only feedback. Keep typing and clicking while it listens. |
+| **Light when idle** | The mic is open only while listening. The model loads on demand and is freed after 10 idle minutes. |
+| **One-click install** | A Flatpak. No compilers, no `sudo`, no `input` group, no udev rules ([D-015](docs/decisions.md)). |
+
+## How it works
+
+```mermaid
+flowchart LR
+    key(["Shortcut<br/>Super+H"]) --> mic["Microphone<br/>open only while listening"]
+    mic --> asr["Parakeet re-reads<br/>the sentence every 0.5 s"]
+    asr --> agree{"Two runs<br/>agree?"}
+    agree -->|"yes: about 1 s behind your voice"| type["Typed as keystrokes<br/>through the portal"]
+    agree -->|not yet| asr
+    type --> app(["The app<br/>you're using"])
+```
+
+Typed words are never changed afterwards: no backspacing, so nothing breaks if you move the
+cursor or type yourself.
 
 ## Install
 
@@ -28,206 +73,241 @@ flatpak install --user https://gabus.github.io/murmur/murmur.flatpakref
 ```
 
 Or open `murmur.flatpakref` from the [project page](https://gabus.github.io/murmur/) or the
-[latest release](https://github.com/gabus/murmur/releases) in Discover or GNOME Software. The
-first start opens a one-page setup: shortcut, typing permission, speech model. After that,
-murmur lives in the tray. Requires KDE Plasma 6.1+ or GNOME 48+ on Wayland (see Supported
-desktops).
+[latest release](https://github.com/gabus/murmur/releases) in Discover or GNOME Software.
 
-> **About this project:** murmur's code, tests and packaging were written with AI assistance
-> (Anthropic's Claude), directed and reviewed by the maintainer. It is distributed from its own
-> Flatpak repo, not Flathub ([D-015](docs/decisions.md)).
+### What a distro must have
 
-## Specification
+| Requirement | Why | Check |
+|---|---|---|
+| Wayland session | Murmur has no X11 code | `echo $XDG_SESSION_TYPE` |
+| KDE Plasma 6.1+ or GNOME 48+ | Typing needs the compositor's EIS support | `plasmashell --version` |
+| xdg-desktop-portal + the KDE or GNOME backend | Shortcut, typing permission, clipboard, notifications, autostart | `flatpak run io.github.gabus.Murmur --check` |
+| PipeWire or PulseAudio | Microphone | `pactl info` |
+| x86_64 | Only build so far (ARM not yet) | `uname -m` |
+| Tray host *(optional)* | Icon and menu. On GNOME: the AppIndicator extension | |
 
-### UX specification
-
-murmur behaves like macOS dictation: one key starts it, the same key stops it,
-and in between it stays out of the way.
-
-#### Principles
-
-- **The user is in control.** Listening starts and stops only when the user
-  presses the shortcut or clicks the tray icon. murmur never stops on its own
-  (no silence timeout) and never starts on its own.
-- **Nothing is lost.** Audio is recorded from the moment the key is pressed, even
-  while the model is still loading, and is transcribed once the model is ready.
-- **No interruptions.** No popups, preview windows, sounds or notifications in
-  normal use. The tray icon is the only feedback. Notifications appear only for
-  errors that need action (no mic, permission revoked, model missing).
-- **Typing and talking mix freely.** The keyboard and mouse work normally while
-  listening. Each word is inserted at the cursor, wherever focus is at that
-  moment.
-- **Readable output by default.** The default model must produce punctuation and
-  capitalization.
-- **Setup happens once.** The shortcut, typing permission and model download are
-  handled in first-run setup, never during the first dictation.
-
-#### First run
-
-A one-time setup window, all on one page ([D-009](docs/decisions.md)):
-
-1. **Shortcut.** Portal dialog where the user picks a key. murmur suggests `Super+H`, or
-   `Super+Alt+H` on GNOME, where `Super+H` hides the window ([D-016](docs/decisions.md)). A
-   Change button reopens the desktop's dialog where the portal can (v2). GNOME's portal is v1,
-   so there the shortcut is changed in GNOME Settings.
-2. **Typing permission.** An "Allow…" button opens the RemoteDesktop portal dialog. The
-   permission is remembered, so it is never asked again.
-3. **Model.** The default model starts downloading as soon as the window opens, with a
-   progress bar and an option to pick another.
-4. **Start at login** checkbox (off by default).
-
-After setup the window closes, and murmur lives only in the tray. **Settings…** in the tray
-menu opens a small window with the same look: shortcut, microphone, model, the pause that ends
-a sentence, idle unload time and start at login ([D-010](docs/decisions.md)). Below them,
-**Your system** checks what the distro must provide and shows a green tick or a red cross with
-the reason for each: Wayland session, Plasma 6.1+ or GNOME 48+, desktop portal, PipeWire or
-PulseAudio, global shortcut, typing, clipboard and tray icon. It's checked every time the window
-opens, read-only (no dialogs) ([D-019](docs/decisions.md)). `murmur --check` prints the same
-list in a terminal ([D-020](docs/decisions.md)).
-
-#### Dictating
-
-| User does | murmur does |
-|---|---|
-| Presses shortcut | Icon switches to *listening* immediately and the mic opens. If the model isn't loaded, it loads in the background while audio is buffered. |
-| Speaks | Words appear at the cursor as you speak, about 1 second behind your voice. Icon reacts to voice level. |
-| Pauses | The last words and the sentence's final punctuation are typed. |
-| Types, clicks, switches apps | Nothing changes. Listening continues, and the next phrase goes wherever the cursor is. |
-| Presses shortcut again | The phrase in progress is finished and inserted, then the mic closes and the icon goes back to *idle*. |
-| Clicks tray icon | Same as the shortcut. Right-click opens the menu. |
-
-#### Tray icon states
-
-| State | Look |
-|---|---|
-| Idle | Monochrome mic, matching the panel |
-| Loading | Subtle animation (only seen if loading takes longer than ~300 ms) |
-| Listening | Accent/red mic that reacts to voice level |
-| Error | Mic with warning badge; tooltip says what's wrong |
-
-#### Real-time typing
-
-Words are typed as you speak, **about 1 second behind your voice**, and once typed
-they are **never changed**: no backspacing, so nothing breaks if you move the
-cursor or type yourself. The 1 s delay is deliberate. It gives the model time to
-settle, so most corrections (e.g. "I scream" → "ice cream") happen before a word
-is typed.
-
-Two engines:
-
-- **Re-check (default, tentative).** Every ~0.5 s an accurate offline model
-  (Parakeet) re-transcribes the sentence so far. A word is typed once two
-  consecutive runs agree on it (the "local agreement" policy from whisper_streaming).
-  Punctuation and casing come from the model itself. The audio buffer is trimmed at
-  each finished sentence. Costs CPU while speaking.
-- **Light.** A streaming transducer with greedy decoding (append-only output). A word
-  is typed ~1 s after it's recognized, with punctuation/casing added by a separate
-  step. For weaker machines.
-
-On a pause, or when the user stops, the remaining words and final punctuation are
-typed. The delay is configurable (default ~1 s).
-
-**Difference from macOS:** macOS shows provisional words and can still correct
-them afterwards. murmur catches most corrections during the 1 s wait; anything the
-model changes its mind about later stays as typed.
-
-#### Known limitations of keystroke output
-
-murmur inserts text by sending keystrokes through the RemoteDesktop portal. That
-works in every app, but it can't be fully seamless:
-
-- **Collision.** Each word is sent as one burst (under 1 ms), so the user's own keystrokes can
-  land between murmur's words but not inside them.
-- **Layout.** Characters that aren't on the active keyboard layout (e.g. `ą` while on *US*)
-  are pasted through the clipboard, which is restored afterwards. A clipboard manager may
-  still record them.
-- **Held modifiers.** If Ctrl/Alt/Super were physically held while murmur typed,
-  the letters would act as shortcuts (and Shift would change their case). murmur sees held,
-  latched and locked modifiers through EIS and waits until they are released before typing.
-- **No context.** murmur can't read the text around the cursor, so spacing and
-  capitalization after the user's own edits are a guess.
-- **Password fields.** murmur can't detect them.
-- **No corrections.** Words are typed once. Earlier words can't be fixed when
-  later context arrives, as macOS does.
-
-An input-method engine (Fcitx5 on KDE, IBus on GNOME) solves all five: text is
-committed in one piece through the text-input protocol, the field type and
-surrounding text are known, and live text can be shown underlined in the field
-(as on macOS). See the open questions in TODO.md.
-
-### Functional requirements
-
-| Area | Requirement |
-|---|---|
-| Hotkey | Global toggle shortcut via the `org.freedesktop.portal.GlobalShortcuts` portal. User-rebindable through the desktop's settings. |
-| Audio | Capture the default PipeWire/Pulse source at 16 kHz mono. The stream is open **only while listening**. Optional source picker. |
-| VAD | Silero VAD for end-of-phrase detection only. Never stops listening. |
-| ASR | sherpa-onnx. Default: offline model re-run every ~0.5 s on the current sentence, committing words two runs agree on. Light: streaming transducer, greedy decoding, plus a punctuation/casing step. |
-| Output | Type text through the `org.freedesktop.portal.RemoteDesktop` portal's EIS channel (`ConnectToEIS`, libei): key events resolved through the compositor's XKB keymap and active layout, with murmur pressing Shift/AltGr itself ([D-005](docs/decisions.md)). Words wait while held, latched or locked modifiers could change what's typed ([D-007](docs/decisions.md)); after ~2 s the tray shows *Waiting*. If typing is denied, murmur asks again only on the next dictation. A word containing characters missing from the active layout is pasted whole through the clipboard (Ctrl+V; `paste_keys = "ctrl+shift+v"` in the config for terminals), then the previous clipboard content is restored and served by murmur until something else is copied ([D-011](docs/decisions.md)). Every typed word is followed by one space ([D-002](docs/decisions.md)). |
-| Indicator | StatusNotifierItem tray icon with idle / loading / listening / error states. While listening, the icon reacts to mic level. The menu has start/stop, model picker, settings and quit. |
-| Models | Download on demand into `$XDG_DATA_HOME/murmur/models` with checksum verification. Show size before download. Delete from menu. |
-| Resources | Idle: no audio stream, no model in memory, ~0% CPU. Unload the model after configurable idle time (default 10 min). |
-| Autostart | Optional start at login via the `org.freedesktop.portal.Background` portal. |
-| Config | Single TOML file in `$XDG_CONFIG_HOME/murmur/config.toml`: `model`, `pause_secs`, `idle_unload_minutes`, `microphone`, `autostart`, `paste_keys`, `setup_done`. Most are also in the Settings window. |
-
-### Supported models
-
-| Model | Mode | Download | Notes |
-|---|---|---|---|
-| Parakeet TDT 0.6B v3 (int8) | re-check | 490 MB | **Default.** Most accurate; built-in punctuation + casing. 25 European languages, auto-detected. |
-| Moonshine base v2 (en) | re-check | 110 MB | Lighter, English. Punctuation + casing built in. No timestamps, so words are aligned by order. |
-| Moonshine tiny v2 (en) | re-check | 30 MB | Lightest download, English. Less accurate. |
-| Light: streaming Zipformer en (2023-06-26) | light | 310 MB + 31 MB | Lowest CPU (~5 % of real time). Punctuation/casing from a separate model ([D-008](docs/decisions.md)). |
-
-All models are downloaded on demand from the sherpa-onnx releases, with the sizes and
-checksums pinned in `src/models.rs`. Measurements are in [docs/benchmarks.md](docs/benchmarks.md).
+Settings → **Your system** checks all of this on your machine, with a ✓ or ✗ and the reason
+([D-019](docs/decisions.md)). `murmur --check` prints the same list in a terminal
+([D-020](docs/decisions.md)).
 
 ### Supported desktops
 
-| Desktop | Hotkey | Typing | Tray | Notes |
-|---|---|---|---|---|
-| KDE Plasma 6.1+ | ✅ | ✅ | ✅ | Primary target. Typing needs EIS in RemoteDesktop (6.1+); tested on 6.7 |
-| GNOME 48+ | ✅ Super+Alt+H; change it in GNOME Settings (portal v1) | ✅ | ⚠️ needs AppIndicator extension | Tested headless on 50.6. The permission dialog needs "Allow Remote Interaction" switched on. An orange "Stop Screen Sharing" button shows in the top bar while murmur's session is open |
-| Hyprland | ✅ | ⚠️ to verify | ✅ (with a tray bar) | |
-| Sway / wlroots | ❌ no GlobalShortcuts portal | ⚠️ | ✅ | Unsupported |
+| Desktop | Shortcut | Typing | Tray | |
+|---|:-:|:-:|:-:|---|
+| **KDE Plasma 6.1+** | ✅ Super+H | ✅ | ✅ | Primary target. Tested on 6.7 and 6.8 |
+| **GNOME 48+** | ✅ Super+Alt+H | ✅ | ⚠️ AppIndicator | Change the shortcut in GNOME Settings (portal v1). Switch on *Allow Remote Interaction* in the permission dialog. An orange *Stop Screen Sharing* button shows while Murmur's session is open. Tested headless on 50.6 |
+| Hyprland | ✅ | ❓ to verify | ✅ with a bar | |
+| Sway / wlroots | ❌ no GlobalShortcuts portal | ❓ | ✅ | Unsupported |
 
-## Toolset
+> **About this project:** Murmur's code, tests and packaging were written with AI assistance
+> (Anthropic's Claude), directed and reviewed by the maintainer. It's distributed from its own
+> Flatpak repo, not Flathub ([D-015](docs/decisions.md)).
 
-| Concern | Choice |
+## Using it
+
+| You | Murmur |
 |---|---|
-| Language | Rust (stable) |
-| Async runtime | `tokio` |
-| Portals | [`ashpd`](https://crates.io/crates/ashpd): GlobalShortcuts, RemoteDesktop, Background |
-| Tray | [`ksni`](https://crates.io/crates/ksni) (StatusNotifierItem, no Qt/GTK) |
-| Setup & Settings windows | [Slint](https://slint.dev), software renderer: no GPU permission ([D-001](docs/decisions.md)) |
-| Audio | `cpal`, or `libpulse-binding` if cpal misbehaves inside the sandbox |
-| ASR + VAD | [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) via `sherpa-rs` (to evaluate) or own FFI to its C API |
-| Inference | onnxruntime, CPU. Dev builds: sherpa-onnx's prebuilt static libs (Cargo feature `sherpa-static`, default). Flatpak: ONNX Runtime and the sherpa-onnx C API built from source as shared libs (`sherpa-shared`) |
-| Config | `serde` + `toml` |
-| Model download | `reqwest` + `sha2` |
-| Logging | `tracing` |
-| Packaging | Flatpak: `org.freedesktop.Platform` / `Sdk` 26.08 + `rust-stable` extension, `flatpak-cargo-generator`. Builds offline, everything from source ([docs/packaging.md](docs/packaging.md)) |
-| App ID | `io.github.gabus.Murmur` |
+| Press the shortcut | The icon turns red at once and the mic opens. If the model isn't loaded yet, it loads while your audio is buffered: nothing is lost. |
+| Speak | Words appear at the cursor about 1 second behind your voice. The icon follows your voice level. |
+| Pause | The last words and the sentence's final punctuation are typed. |
+| Type, click, switch apps | Nothing changes. The next words go wherever the cursor is. |
+| Press the shortcut again | The phrase in progress is finished, then the mic closes. |
+| Click the tray icon | Same as the shortcut. Right-click for the menu. |
 
-### Flatpak permissions
+### Tray icon
 
-```
---socket=wayland
---socket=pulseaudio          # microphone
---share=network              # model download only
---talk-name=org.kde.StatusNotifierWatcher
-```
+| <img src="docs/screenshots/tray-idle.png" width="32" alt=""> | <img src="docs/screenshots/tray-listening-quiet.png" width="32" alt=""> <img src="docs/screenshots/tray-listening-loud.png" width="32" alt=""> | <img src="docs/screenshots/tray-loading.png" width="32" alt=""> | <img src="docs/screenshots/tray-error.png" width="32" alt=""> |
+|:-:|:-:|:-:|:-:|
+| **Idle**<br><sub>the Wave M in the panel's colour</sub> | **Listening**<br><sub>red; the wave grows with your voice</sub> | **Loading / Waiting**<br><sub>dimmed pulse (after ~300 ms); Waiting while you hold Ctrl/Alt/Super</sub> | **Error**<br><sub>amber badge; the tooltip says what's wrong</sub> |
 
-Hotkey, typing and autostart all go through portals, so they need no extra
-permissions. Explicitly **not** requested: `--device=all`, `--filesystem=host`,
-X11. Never used: `/dev/uinput`, evdev, `dotool`/`ydotool`, the `input` group or
-udev rules. They would break the one-click install.
+## Speech models
+
+| Model | Download | Languages | |
+|---|---|---|---|
+| **Parakeet TDT 0.6B v3** (int8) | 490 MB | 25, detected automatically | **Default.** Most accurate. Punctuation and capitals built in |
+| **Moonshine base v2** | 110 MB | English | Lighter. Punctuation and capitals built in. No timestamps, so words are aligned by order |
+
+Parakeet's 25 languages:
+
+| | | | | |
+|---|---|---|---|---|
+| Bulgarian `bg` | Croatian `hr` | Czech `cs` | Danish `da` | Dutch `nl` |
+| English `en` | Estonian `et` | Finnish `fi` | French `fr` | German `de` |
+| Greek `el` | Hungarian `hu` | Italian `it` | Latvian `lv` | Lithuanian `lt` |
+| Maltese `mt` | Polish `pl` | Portuguese `pt` | Romanian `ro` | Russian `ru` |
+| Slovak `sk` | Slovenian `sl` | Spanish `es` | Swedish `sv` | Ukrainian `uk` |
+
+Models download on demand from the sherpa-onnx releases, with sizes and checksums pinned in
+`src/models.rs` ([D-021](docs/decisions.md)). Measurements: [docs/benchmarks.md](docs/benchmarks.md).
+
+## Specification
+
+The rules the code follows. Each section expands.
+
+<details>
+<summary><b>Principles</b></summary>
+
+- **The user is in control.** Listening starts and stops only on the shortcut or a tray click.
+  Murmur never stops on its own (no silence timeout) and never starts on its own.
+- **Nothing is lost.** Audio is recorded from the moment the key is pressed, even while the model
+  is still loading, and is transcribed once the model is ready.
+- **No interruptions.** No popups, preview windows, sounds or notifications in normal use.
+  Notifications appear only for errors that need action (no mic, permission revoked, model
+  missing).
+- **Typing and talking mix freely.** Keyboard and mouse work normally while listening. Each word
+  is inserted at the cursor, wherever focus is at that moment.
+- **Readable output by default.** The default model must produce punctuation and capitals.
+- **Setup happens once.** Shortcut, typing permission and model download are handled in first-run
+  setup, never during the first dictation.
+
+</details>
+
+<details>
+<summary><b>First run and Settings</b></summary>
+
+One setup window, all on one page ([D-009](docs/decisions.md)):
+
+| Row | What happens |
+|---|---|
+| **Shortcut** | The portal's dialog, where the user picks a key. Murmur suggests `Super+H`, or `Super+Alt+H` on GNOME, where `Super+H` hides the window ([D-016](docs/decisions.md)). **Change…** reopens the desktop's dialog where the portal can (v2). GNOME's portal is v1, so there it's changed in GNOME Settings. |
+| **Typing permission** | **Allow…** opens the RemoteDesktop portal dialog. The permission is remembered and never asked again. |
+| **Speech model** | The default starts downloading as soon as the window opens, with a progress bar and an option to pick another. |
+| **Start at login** | Checkbox, off by default. |
+
+Then the window closes and Murmur lives in the tray. **Settings…** in the tray menu opens a
+window with the same look ([D-010](docs/decisions.md)):
+
+- shortcut, microphone, model, the pause that ends a sentence, idle unload time, start at login;
+- **Your system** ([D-019](docs/decisions.md)): Wayland session, Plasma 6.1+ or GNOME 48+, desktop
+  portal, PipeWire or PulseAudio, global shortcut, typing, clipboard and tray icon, each with a
+  green tick, or a red cross and the reason. It's checked read-only each time the window opens
+  (no dialogs).
+
+</details>
+
+<details>
+<summary><b>Real-time typing</b></summary>
+
+Words are typed **about 1 second behind your voice**, and once typed they are **never changed**.
+The delay is deliberate: it gives the model time to settle, so most corrections ("I scream" →
+"ice cream") happen before a word is typed.
+
+| Step | Detail |
+|---|---|
+| Re-check | Every ~0.5 s the offline model re-transcribes the sentence so far. |
+| Commit | A word is typed once two consecutive runs agree on it (the "local agreement" policy from whisper_streaming). |
+| Punctuation | Comes from the model itself. |
+| Sentence end | The audio buffer is trimmed at each finished sentence. On a pause, or when the user stops, the remaining words and final punctuation are typed. |
+| Cost | CPU while speaking, nothing while idle. The delay is configurable (default ~1 s). |
+
+**Difference from macOS:** macOS shows provisional words and can still correct them afterwards.
+Murmur catches most corrections during the 1 s wait; anything the model changes its mind about
+later stays as typed.
+
+</details>
+
+<details>
+<summary><b>Known limitations of keystroke output</b></summary>
+
+Murmur types by sending keystrokes through the RemoteDesktop portal. That works in every app but
+can't be fully seamless:
+
+| Limitation | What happens |
+|---|---|
+| Collision | Each word is one burst (under 1 ms), so your own keystrokes can land between Murmur's words but not inside them. |
+| Layout | Characters missing from the active layout (e.g. `ą` on *US*) are pasted through the clipboard, which is restored afterwards. A clipboard manager may still record them. |
+| Held modifiers | With Ctrl/Alt/Super held, letters would act as shortcuts. Murmur sees held, latched and locked modifiers through EIS and waits until they're released. |
+| No context | Murmur can't read the text around the cursor, so spacing and capitals after your own edits are a guess. |
+| Password fields | Murmur can't detect them. |
+| No corrections | Words are typed once. Earlier words can't be fixed when later context arrives. |
+
+An input-method engine (Fcitx5 on KDE, IBus on GNOME) would solve all of these: text is committed
+in one piece through the text-input protocol, the field type and surrounding text are known, and
+live text can be shown underlined in the field. See the open questions in [TODO.md](TODO.md).
+
+</details>
+
+<details>
+<summary><b>Functional requirements</b></summary>
+
+| Area | Requirement |
+|---|---|
+| Hotkey | Global toggle shortcut via the `org.freedesktop.portal.GlobalShortcuts` portal. Rebindable through the desktop's settings. |
+| Audio | Capture the default PipeWire/Pulse source at 16 kHz mono. The stream is open **only while listening**. Optional source picker. |
+| VAD | Silero VAD for end-of-phrase detection only. Never stops listening. |
+| ASR | sherpa-onnx. The offline model re-runs every ~0.5 s on the current sentence; words two runs agree on are typed. |
+| Output | Keystrokes through the `org.freedesktop.portal.RemoteDesktop` portal's EIS channel (`ConnectToEIS`, libei), resolved through the compositor's XKB keymap and active layout, with Murmur pressing Shift/AltGr itself ([D-005](docs/decisions.md)). Words wait while held, latched or locked modifiers could change what's typed ([D-007](docs/decisions.md)); after ~2 s the tray shows *Waiting*. If typing is denied, Murmur asks again only on the next dictation. A word with characters missing from the active layout is pasted whole (Ctrl+V; `paste_keys = "ctrl+shift+v"` in the config for terminals), then the previous clipboard is restored and served by Murmur until something else is copied ([D-011](docs/decisions.md)). Every typed word is followed by one space ([D-002](docs/decisions.md)). |
+| Indicator | StatusNotifierItem tray icon: idle, loading, listening (follows the mic level), waiting, error. Menu: start/stop, model picker, settings, quit. |
+| Models | Download on demand into `$XDG_DATA_HOME/murmur/models` with checksum verification. Size shown before download. Delete from the menu. |
+| Resources | Idle: no audio stream, no model in memory, ~0 % CPU. The model unloads after a configurable idle time (default 10 min). |
+| Autostart | Optional start at login via the `org.freedesktop.portal.Background` portal. |
+| Config | One TOML file, `$XDG_CONFIG_HOME/murmur/config.toml`: `model`, `pause_secs`, `idle_unload_minutes`, `microphone`, `autostart`, `paste_keys`, `setup_done`. Most are also in Settings. |
+
+</details>
+
+<details>
+<summary><b>Flatpak permissions</b></summary>
+
+| Permission | For |
+|---|---|
+| `--socket=wayland` | The setup and settings windows |
+| `--socket=pulseaudio` | The microphone |
+| `--share=network` | The model download only |
+| `--talk-name=org.kde.StatusNotifierWatcher` | The tray icon |
+
+Shortcut, typing, clipboard, notifications and autostart go through portals and need no
+permission. Never requested: `--device=all`, `--filesystem=host`, X11. Never used:
+`/dev/uinput`, evdev, `dotool`/`ydotool`, the `input` group or udev rules: they would break the
+one-click install.
+
+</details>
 
 ## Architecture
 
-The daemon is a tokio app. Blocking work runs on dedicated threads: audio capture, and the
-ASR worker that owns the models. The setup and settings windows run in a separate short-lived
-process (`murmur --ui …`), so the daemon never loads a GUI toolkit while idle.
+```mermaid
+flowchart LR
+    subgraph sandbox["Flatpak sandbox"]
+        subgraph daemon["murmur daemon (tokio)"]
+            app["app.rs<br/>Idle ⇄ Listening"]
+            audio["audio thread<br/>cpal, 16 kHz"]
+            asr["ASR worker thread<br/>sherpa-onnx"]
+            out["output<br/>EIS typing"]
+            tray["tray<br/>ksni"]
+        end
+        ui["window process<br/>murmur --ui (Slint)"]
+    end
+    portal[("xdg-desktop-portal")]
+    comp[("compositor")]
+    pw[("PipeWire")]
+    pw --> audio
+    audio --> asr
+    asr -->|words| app
+    app --> out
+    app <-->|JSON lines| ui
+    app <-->|shortcut, permission| portal
+    out -->|keystrokes over EIS| comp
+    tray <-->|D-Bus| panel[("panel")]
+```
+
+The daemon is a tokio app. Blocking work runs on dedicated threads: audio capture, and the ASR
+worker that owns the model. The windows run in a separate short-lived process, so the daemon
+never loads a GUI toolkit while idle.
+
+| Concern | Choice |
+|---|---|
+| Language | Rust (stable, edition 2024), `tokio` |
+| Portals | [`ashpd`](https://crates.io/crates/ashpd): GlobalShortcuts, RemoteDesktop, Clipboard, Notification, Background |
+| Typing | libei protocol via `reis`, keymaps via `xkbcommon` |
+| Tray | [`ksni`](https://crates.io/crates/ksni) (StatusNotifierItem, no Qt/GTK) |
+| Windows | [Slint](https://slint.dev), software renderer: no GPU permission ([D-001](docs/decisions.md)) |
+| Audio | `cpal` with its pure-Rust PulseAudio client (PipeWire serves it too) |
+| ASR + VAD | [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) via the official `sherpa-onnx` crate, ONNX Runtime on the CPU. Dev builds use sherpa-onnx's prebuilt static libs (`sherpa-static`, default); the Flatpak builds ONNX Runtime and the sherpa-onnx C API from source as shared libs (`sherpa-shared`, [D-014](docs/decisions.md)) |
+| Config / download / logs | `serde` + `toml` · `reqwest` + `rustls` + `sha2` · `tracing` |
+| Packaging | Flatpak on `org.freedesktop.Platform` 26.08, built offline from source ([docs/packaging.md](docs/packaging.md)) |
+| App ID | `io.github.gabus.Murmur` |
+
+<details>
+<summary><b>Source tree</b></summary>
 
 ```
 src/
@@ -240,8 +320,8 @@ src/
   audio.rs         # mic capture (cpal), 16 kHz mono, open only while listening
   agc.rs           # gain control for quiet microphones
   vad.rs           # Silero VAD (end of phrase only)
-  asr/             # engines: re-check (Parakeet, Moonshine) with local-agreement
-                   #   committer; light streaming engine; worker thread
+  asr/             # re-check engine (Parakeet, Moonshine), local-agreement
+                   #   committer, worker thread
   models.rs        # registry (URLs, sizes, sha256), engine loading
   model_manager.rs # active model, downloads, config persistence
   download.rs      # streaming download + sha256 + atomic extract
@@ -249,22 +329,35 @@ src/
   notify.rs        # error notifications (Notification portal)
   autostart.rs     # Background portal
   syscheck.rs      # probes what the host provides (Settings → Your system)
+  portal.rs        # shared portal helpers
   config.rs        # $XDG_CONFIG_HOME/murmur/config.toml
-  ui/              # Slint windows (setup, settings) + daemon↔UI protocol; checks.rs
-                   #   turns the system probe into the Your system checklist
+  ui/              # Slint windows (setup, settings), daemon↔UI protocol,
+                   #   checks.rs: the Your system checklist
   ui_host.rs       # spawns and drives the window process
 ```
 
+</details>
+
 ## Development
 
-### Prerequisites (Fedora)
-
-Nothing is installed on the host with `dnf`. Build tools live in a
-[toolbox](https://containertoolbx.org/) container and in Flatpak.
+Nothing is installed on the host: build tools live in a [toolbox](https://containertoolbx.org/)
+(`murmur-dev`) and in Flatpak. The toolbox shares the home directory, Wayland session, D-Bus and
+PipeWire, so Murmur run from it reaches the portals and the mic.
 
 ```sh
-# dev container (one time): Rust + C++ toolchain, isolated from the host
+T="toolbox run -c murmur-dev"
+$T cargo run                                # the daemon (first run opens the setup window)
+$T cargo run -- --check                     # what this system provides
+bash .claude/skills/murmur-gate/gate.sh     # fmt + clippy -D warnings + tests
+flatpak/install-local.sh                    # Flatpak: offline build into ./repo, install from "murmur-local"
+```
+
+<details>
+<summary><b>One-time setup (Fedora)</b></summary>
+
+```sh
 toolbox create murmur-dev
+# Rust + C++ toolchain
 toolbox run -c murmur-dev sudo dnf install -y rust cargo rustfmt clippy gcc-c++ cmake clang pkg-config \
   git alsa-lib-devel pulseaudio-libs-devel libxkbcommon-devel wayland-devel fontconfig-devel \
   python3-aiohttp python3-tomlkit   # last two: flatpak-cargo-generator
@@ -274,58 +367,42 @@ toolbox run -c murmur-dev sudo dnf install -y mutter gnome-shell dbus-daemon \
 # GNOME portal tests (tests/portal_headless_gnome.rs; gjs + GTK 4 come with gnome-shell)
 toolbox run -c murmur-dev sudo dnf install -y xdg-desktop-portal xdg-desktop-portal-gnome \
   gnome-control-center wl-clipboard wayland-utils
-
-# flatpak builds (one time)
+# Flatpak builds
 flatpak install flathub org.flatpak.Builder \
   org.freedesktop.Sdk//26.08 org.freedesktop.Sdk.Extension.rust-stable//26.08
 ```
 
-The toolbox shares the home directory, Wayland session, D-Bus and PipeWire, so
-murmur run from it can reach the portals and the mic (to verify in stage 0).
-Delete it at any time with `toolbox rm -f murmur-dev`.
+Delete the toolbox any time with `toolbox rm -f murmur-dev`.
 
-### Build & run
+</details>
+
+<details>
+<summary><b>Tests and tools</b></summary>
 
 ```sh
-T="toolbox run -c murmur-dev"
-$T cargo run                    # the daemon (first run opens the setup window)
-$T cargo test                   # unit tests
-bash .claude/skills/murmur-gate/gate.sh   # fmt + clippy -D warnings + tests
-
-# integration tests in an invisible nested KWin (never touch the real desktop);
-# need the spike test pad: (cd spike && $T cargo build)
+$T cargo test                               # unit tests
+# integration tests in invisible compositors (never touch the real desktop);
+# the nested-KWin ones need the spike test pad: (cd spike && $T cargo build)
 $T cargo test --test output_nested_kwin -- --ignored
-$T cargo test --test portal_nested_kde -- --ignored   # real KDE portal: dialog, token, paste
+$T cargo test --test portal_nested_kde -- --ignored      # real KDE portal: dialog, token, paste
+$T cargo test --test portal_headless_gnome -- --ignored  # real GNOME portals, headless
 $T cargo test --features dev-harness --test e2e_nested_kwin -- --ignored   # needs models
 
-# dev tools
 $T cargo run --release --example simulate -- --model parakeet-v3 file.wav   # engine on WAVs
 $T cargo run --example ui_shots -- /tmp/shots                                # window screenshots
-$T cargo run -- --check     # what this system provides (also: flatpak run io.github.gabus.Murmur --check)
-
-# after every Cargo.lock change: refresh the vendored crate list for the Flatpak
-$T flatpak/update-cargo-sources.sh
-
-# Flatpak (from the host): offline, everything from source
-flatpak/install-local.sh    # builds into ./repo, installs from the "murmur-local" remote
-flatpak run io.github.gabus.Murmur
+$T flatpak/update-cargo-sources.sh          # after every Cargo.lock change
 ```
 
 The `dev-harness` cargo feature (never shipped) adds `MURMUR_DEV_AUDIO=<wav>` (a WAV instead of
 the mic), `MURMUR_DEV_EIS=kwin-direct`, `MURMUR_DEV_NO_HOTKEY` and `MURMUR_DEV_AUTORUN`.
 
-The first Flatpak build compiles ONNX Runtime and sherpa-onnx (about 10 minutes in total on
-the maintainer's 16-thread machine). flatpak-builder caches each module in `.flatpak-builder/`,
-so later builds only rebuild murmur unless those modules change. CI builds the same bundle on
-every push (`.github/workflows/flatpak.yml`). Details and Flathub notes:
-[docs/packaging.md](docs/packaging.md).
+The first Flatpak build compiles ONNX Runtime and sherpa-onnx (about 10 minutes on 16 threads);
+flatpak-builder caches them in `.flatpak-builder/`. CI builds the same bundle on every push
+(`.github/workflows/flatpak.yml`). Details and Flathub notes: [docs/packaging.md](docs/packaging.md).
 
-## Implementation stages
-
-See [TODO.md](TODO.md).
+</details>
 
 ## License
 
-GPL-3.0-or-later ([LICENSE](LICENSE), [D-013](docs/decisions.md)). The speech models are
-downloaded separately and carry their own licenses (Parakeet: CC-BY-4.0; Moonshine English:
-MIT; Zipformer/punctuation: Apache-2.0).
+GPL-3.0-or-later ([LICENSE](LICENSE), [D-013](docs/decisions.md)). The speech models download
+separately and carry their own licenses: Parakeet CC-BY-4.0, Moonshine English MIT.

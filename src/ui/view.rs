@@ -564,7 +564,7 @@ mod tests {
             v.done_hint,
             "Waiting for the typing permission and the model download."
         );
-        assert_eq!(v.models.len(), 4);
+        assert_eq!(v.models.len(), 2);
         assert!(v.models[0].active);
     }
 
@@ -637,10 +637,10 @@ mod tests {
         // The user picked another model; the daemon may keep the old one active until it's ready.
         let mut s = samples::setup_fresh();
         if let Some(d) = s.download.as_mut() {
-            d.model_id = "moonshine-tiny-en".into();
+            d.model_id = "moonshine-base-en".into();
         }
         let v = model(&s);
-        assert!(v.detail.text.starts_with("Moonshine tiny"));
+        assert!(v.detail.text.starts_with("Moonshine base"));
         assert!(!setup(&s).done_enabled);
     }
 
@@ -694,7 +694,8 @@ mod tests {
         assert_eq!(v.model_labels[0], "Parakeet v3 · 490 MB");
         assert_eq!(v.model_labels[1], "Moonshine base · download 110 MB");
         assert_eq!(v.model_index, 0);
-        assert_eq!(v.model_at(2), Some("moonshine-tiny-en"));
+        assert_eq!(v.model_at(1), Some("moonshine-base-en"));
+        assert_eq!(v.model_at(2), None);
         let d = v.download.as_ref().map(|d| d.detail.text.as_str());
         assert_eq!(d, Some("Downloading Moonshine base… 62 %"));
         assert_eq!(v.idle_labels[v.idle_index], "10 minutes idle");

@@ -210,9 +210,9 @@ mod tests {
         ui.show().expect("show");
         ui.window().set_size(PhysicalSize::new(520, 420));
 
-        // Starts on the model in use (Parakeet), then Down, Down, Up, Return.
+        // Starts on the model in use (Parakeet), then Down, Up, Down, Return.
         ui.invoke_show_model_list();
-        for key in [Key::DownArrow, Key::DownArrow, Key::UpArrow, Key::Return] {
+        for key in [Key::DownArrow, Key::UpArrow, Key::DownArrow, Key::Return] {
             press(&ui, key);
         }
         assert_eq!(*picked.borrow(), ["moonshine-base-en"]);

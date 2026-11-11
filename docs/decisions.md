@@ -199,3 +199,12 @@ something is missing.
   and users can paste its output into bug reports. It's read-only and doesn't touch a running
   Murmur. Drop it if the maintainer objects.
 - Spec: README → Development.
+
+### D-021 · 2026-11-11 · maintainer. Supersedes D-008
+**Two models: Parakeet v3 (default) and Moonshine base v2 (English).** Moonshine tiny v2 and
+"Light" (streaming Zipformer en 2023-06-26 + the punctuation model) are dropped completely.
+- Why: the maintainer sees no need for them. Parakeet is the accurate default, and Moonshine
+  base covers a lighter English option.
+- The streaming engine (`src/asr/light.rs`), its punctuation model and `examples/light_probe`
+  are removed. A config that names a dropped model falls back to the default (with a warning).
+- Spec: README → Supported models.
