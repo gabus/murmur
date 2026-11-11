@@ -410,26 +410,35 @@ pub struct SettingsView {
     pub idle_index: usize,
     pub autostart: bool,
     pub autostart_error: String,
-    /// The "Your system" checklist (D-019); None while it's being checked.
-    pub system: Option<SystemView>,
+    /// The "Your system" checklist (D-019).
+    pub system: SystemView,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SystemView {
     pub checks: Vec<Check>,
-    /// "All good" or "2 problems".
+    /// "All good", "2 problems" or "Checking…".
     pub summary: String,
     pub all_ok: bool,
+    pub checking: bool,
 }
 
-fn system(state: &UiState) -> Option<SystemView> {
-    let report = state.system.as_ref()?;
+fn system(state: &UiState) -> SystemView {
+    let Some(report) = state.system.as_ref() else {
+        return SystemView {
+            checks: checks::pending(),
+            summary: "Checking…".into(),
+            all_ok: false,
+            checking: true,
+        };
+    };
     let checks = checks::list(report, &state.typing);
-    Some(SystemView {
+    SystemView {
         summary: checks::summary(&checks),
         all_ok: checks.iter().all(|c| c.ok),
         checks,
-    })
+        checking: false,
+    }
 }
 
 impl SettingsView {

@@ -380,6 +380,7 @@ $T cargo test                               # unit tests
 $T cargo test --test output_nested_kwin -- --ignored
 $T cargo test --test portal_nested_kde -- --ignored      # real KDE portal: dialog, token, paste
 $T cargo test --test portal_headless_gnome -- --ignored  # real GNOME portals, headless
+$T cargo test --test ui_nested_kwin -- --ignored         # Settings window size, 100 % and 150 %
 $T cargo test --features dev-harness --test e2e_nested_kwin -- --ignored   # needs models
 
 $T cargo run --release --example simulate -- --model parakeet-v3 file.wav   # engine on WAVs

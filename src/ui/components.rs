@@ -17,6 +17,7 @@ slint::slint! {
     export struct SystemCheck {
         title: string,
         ok: bool,
+        pending: bool,
         detail: string,
     }
 
@@ -96,16 +97,19 @@ slint::slint! {
         }
     }
 
-    // Green tick or red cross for the system checklist.
+    // Green tick or red cross for the system checklist; a grey ring while checking.
     component CheckMark inherits Rectangle {
         in property <bool> ok;
+        in property <bool> pending;
         width: 18px;
         height: 18px;
         border-radius: 9px;
-        background: root.ok ? Theme.success : Theme.danger;
+        background: root.pending ? transparent : root.ok ? Theme.success : Theme.danger;
+        border-width: root.pending ? 2px : 0px;
+        border-color: Theme.track;
         accessible-role: text;
-        accessible-label: root.ok ? "OK" : "Missing";
-        if root.ok: Path {
+        accessible-label: root.pending ? "Checking" : root.ok ? "OK" : "Missing";
+        if !root.pending && root.ok: Path {
             width: 100%;
             height: 100%;
             viewbox-width: 18;
@@ -115,7 +119,7 @@ slint::slint! {
             stroke-width: 2px;
             fill: transparent;
         }
-        if !root.ok: Path {
+        if !root.pending && !root.ok: Path {
             width: 100%;
             height: 100%;
             viewbox-width: 18;
@@ -133,14 +137,17 @@ slint::slint! {
         VerticalLayout {
             alignment: start;
             padding-top: 1px;
-            CheckMark { ok: root.check.ok; }
+            CheckMark {
+                ok: root.check.ok;
+                pending: root.check.pending;
+            }
         }
         VerticalLayout {
             horizontal-stretch: 1;
             spacing: 2px;
             Text {
                 text: root.check.title;
-                color: Palette.foreground;
+                color: root.check.pending ? Theme.muted : Palette.foreground;
                 wrap: word-wrap;
             }
             if root.check.detail != "": Text {
@@ -310,6 +317,9 @@ slint::slint! {
 
         // Natural height of the content at the current width (used for offscreen rendering).
         out property <length> content-height: main.preferred-height;
+        // The compositor set a size; window.rs asks again if it doesn't fit the content.
+        callback resized();
+        changed height => { root.resized(); }
 
         callback change-shortcut();
         callback allow-typing();
@@ -572,13 +582,16 @@ slint::slint! {
         in-out property <bool> autostart;
         in property <string> autostart-error;
 
-        in property <bool> checks-ready;
+        in property <bool> checks-checking;
         in property <[SystemCheck]> checks-left;
         in property <[SystemCheck]> checks-right;
         in property <string> checks-summary;
         in property <bool> checks-all-ok;
 
         out property <length> content-height: main.preferred-height;
+        // The compositor set a size; window.rs asks again if it doesn't fit the content.
+        callback resized();
+        changed height => { root.resized(); }
 
         // "0.8 s": tenths, so 1.0 doesn't print as "1".
         property <int> pause-tenths: Math.round(root.pause-secs * 10);
@@ -731,23 +744,18 @@ slint::slint! {
                     horizontal-stretch: 1;
                     vertical-alignment: center;
                 }
-                if root.checks-ready: Text {
+                Text {
                     text: root.checks-summary;
                     font-size: Theme.small-size;
                     font-weight: 600;
-                    color: root.checks-all-ok ? Theme.success : Theme.danger;
+                    color: root.checks-checking ? Theme.muted
+                        : root.checks-all-ok ? Theme.success : Theme.danger;
                     vertical-alignment: center;
                 }
             }
 
             Card {
-                if !root.checks-ready: Row {
-                    Text {
-                        text: "Checking…";
-                        color: Theme.muted;
-                    }
-                }
-                if root.checks-ready: HorizontalLayout {
+                HorizontalLayout {
                     padding: 14px;
                     spacing: 16px;
                     // Fixed columns: the window is 520 px wide.

@@ -9,6 +9,8 @@ use crate::portal::is_gnome;
 pub struct Check {
     pub title: &'static str,
     pub ok: bool,
+    /// Not checked yet (shown while the probe runs, so the window opens at its final size).
+    pub pending: bool,
     /// Why it fails and what still works; empty when it passes.
     pub detail: String,
 }
@@ -17,16 +19,40 @@ fn pass(title: &'static str) -> Check {
     Check {
         title,
         ok: true,
-        detail: String::new(),
+        ..Default::default()
     }
 }
 
 fn fail(title: &'static str, detail: impl Into<String>) -> Check {
     Check {
         title,
-        ok: false,
         detail: detail.into(),
+        ..Default::default()
     }
+}
+
+/// The lines in the order [`list`] returns them.
+pub const TITLES: [&str; 8] = [
+    "Wayland session",
+    "Plasma 6.1+ or GNOME 48+",
+    "Desktop portal",
+    "PipeWire or PulseAudio",
+    "Global shortcut",
+    "Typing",
+    "Clipboard",
+    "Tray icon",
+];
+
+/// The checklist before the probe has answered: every line pending.
+pub fn pending() -> Vec<Check> {
+    TITLES
+        .iter()
+        .map(|&title| Check {
+            title,
+            pending: true,
+            ..Default::default()
+        })
+        .collect()
 }
 
 /// The first desktop in `XDG_CURRENT_DESKTOP`, for messages.
@@ -198,6 +224,16 @@ mod tests {
             .filter(|c| !c.ok)
             .map(|c| (c.title, c.detail.as_str()))
             .collect()
+    }
+
+    #[test]
+    fn pending_has_the_same_lines() {
+        let titles: Vec<_> = list(&healthy_kde(), &TypingState::Unknown)
+            .iter()
+            .map(|c| c.title)
+            .collect();
+        assert_eq!(titles, TITLES);
+        assert!(pending().iter().all(|c| c.pending && !c.ok));
     }
 
     #[test]

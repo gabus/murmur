@@ -43,6 +43,8 @@ pub struct Nested {
     pub socket: String,
     pub bus: String,
     children: Vec<(&'static str, Child)>,
+    /// Screen size in pixels and scale; KWin's default (1024×768 at 1) when None.
+    screen: Option<(u32, u32, f32)>,
 }
 
 fn runtime_dir() -> PathBuf {
@@ -193,6 +195,15 @@ async fn spawn_portal(
 impl Nested {
     /// Starts dbus-daemon + KWin with the given `kxkbrc` layout list (e.g. `"us,lt"`).
     pub async fn start(layouts: &str) -> Self {
+        Self::start_on(layouts, None).await
+    }
+
+    /// [`Nested::start`] on a `width`×`height` pixel screen at `scale` (e.g. 1.5).
+    pub async fn start_scaled(layouts: &str, width: u32, height: u32, scale: f32) -> Self {
+        Self::start_on(layouts, Some((width, height, scale))).await
+    }
+
+    async fn start_on(layouts: &str, screen: Option<(u32, u32, f32)>) -> Self {
         let id = format!(
             "{}-{}",
             std::process::id(),
@@ -210,6 +221,7 @@ impl Nested {
             bus: format!("unix:path={}", dir.join("bus").display()),
             dir,
             children: Vec::new(),
+            screen,
         };
         nested.write_kxkbrc(layouts);
         nested.start_bus().await;
@@ -258,17 +270,29 @@ impl Nested {
     }
 
     async fn start_kwin(&mut self) {
-        let kwin_args = [
+        let mut kwin_args: Vec<String> = [
             "--virtual",
             "--no-lockscreen",
             "--no-global-shortcuts",
             "--no-kactivities",
             "--socket",
             &self.socket,
-        ];
+        ]
+        .map(String::from)
+        .into();
+        if let Some((width, height, scale)) = self.screen {
+            kwin_args.extend([
+                "--width".into(),
+                width.to_string(),
+                "--height".into(),
+                height.to_string(),
+                "--scale".into(),
+                scale.to_string(),
+            ]);
+        }
         let mut cmd = host_command("kwin_wayland", &self.session_env(), true);
         let child = cmd
-            .args(kwin_args)
+            .args(&kwin_args)
             .stdin(Stdio::null())
             .stdout(log_file(&self.dir, "kwin"))
             .stderr(log_file(&self.dir, "kwin-err"))

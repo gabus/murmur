@@ -188,6 +188,9 @@ fn quit_soon() {
 
 // ------------------------------------------------------------------ pages
 
+/// Both windows are this wide (`components.rs`: `min-width`/`max-width`).
+const WINDOW_WIDTH: f32 = 520.0;
+
 /// The view currently shown, shared between the event loop (writes) and callbacks (read).
 type Shown<V> = Arc<Mutex<Option<V>>>;
 
@@ -201,12 +204,31 @@ pub(super) trait Page: ComponentHandle + 'static {
     fn view(state: &UiState) -> Self::View;
     /// Copies `next` into the component. `prev` is what's shown now (`None` the first time).
     fn apply(&self, prev: Option<&Self::View>, next: &Self::View);
+    /// The content's natural height (logical px); the window's height follows it.
+    fn content_height(&self) -> f32;
+    /// Calls `f` whenever the window's height changes.
+    fn on_height_changed(&self, f: impl Fn() + 'static);
 }
 
 fn show_state<P: Page>(ui: &P, shown: &Shown<P::View>, next: P::View) {
     let mut slot = lock(shown);
     ui.apply(slot.as_ref(), &next);
     *slot = Some(next);
+    fit(ui);
+}
+
+/// Asks for a window as tall as its content. The min/max height constraints alone aren't
+/// enough: a change that lands while the compositor is still configuring the new window is
+/// lost, and the window keeps its first height (content cut off, `tests/ui_nested_kwin.rs`).
+/// Called after every state and whenever the compositor changes the window's height.
+fn fit<P: Page>(ui: &P) {
+    let window = ui.window();
+    let height = ui.content_height();
+    let current = window.size().to_logical(window.scale_factor()).height;
+    debug!(window = current, content = height, "fit");
+    if height > 0.0 && (current - height).abs() >= 1.0 {
+        window.set_size(slint::LogicalSize::new(WINDOW_WIDTH, height));
+    }
 }
 
 fn run_page<P: Page>(ui: P, shown: Shown<P::View>) -> Result<(), UiError> {
@@ -217,6 +239,12 @@ fn run_page<P: Page>(ui: P, shown: Shown<P::View>) -> Result<(), UiError> {
     ui.window().on_close_requested(|| {
         let _ = slint::quit_event_loop();
         CloseRequestResponse::HideWindow
+    });
+    let weak = ui.as_weak();
+    ui.on_height_changed(move || {
+        if let Some(ui) = weak.upgrade() {
+            fit(&ui);
+        }
     });
 
     // The first state is handed over directly so the window never shows placeholder values.
@@ -321,6 +349,14 @@ fn autostart_changed(prev: Option<(bool, &str)>, next: (bool, &str)) -> bool {
 impl Page for SetupWindow {
     type View = SetupView;
 
+    fn content_height(&self) -> f32 {
+        self.get_content_height()
+    }
+
+    fn on_height_changed(&self, f: impl Fn() + 'static) {
+        self.on_resized(f);
+    }
+
     fn view(state: &UiState) -> SetupView {
         view::setup(state)
     }
@@ -408,6 +444,14 @@ fn wire_setup(ui: &SetupWindow, shown: &Shown<SetupView>, out: &Outbox) {
 impl Page for SettingsWindow {
     type View = SettingsView;
 
+    fn content_height(&self) -> f32 {
+        self.get_content_height()
+    }
+
+    fn on_height_changed(&self, f: impl Fn() + 'static) {
+        self.on_resized(f);
+    }
+
     fn view(state: &UiState) -> SettingsView {
         view::settings(state)
     }
@@ -456,18 +500,14 @@ impl Page for SettingsWindow {
             self.set_autostart_error(text(&v.autostart_error));
         }
         if changed(prev.map(|p| &p.system), &v.system) {
-            match &v.system {
-                None => self.set_checks_ready(false),
-                Some(s) => {
-                    // Two columns: base system on the left, desktop features on the right.
-                    let (left, right) = s.checks.split_at(s.checks.len().div_ceil(2));
-                    self.set_checks_left(system_checks(left));
-                    self.set_checks_right(system_checks(right));
-                    self.set_checks_summary(text(&s.summary));
-                    self.set_checks_all_ok(s.all_ok);
-                    self.set_checks_ready(true);
-                }
-            }
+            let s = &v.system;
+            // Two columns: base system on the left, desktop features on the right.
+            let (left, right) = s.checks.split_at(s.checks.len().div_ceil(2));
+            self.set_checks_left(system_checks(left));
+            self.set_checks_right(system_checks(right));
+            self.set_checks_summary(text(&s.summary));
+            self.set_checks_all_ok(s.all_ok);
+            self.set_checks_checking(s.checking);
         }
     }
 }
@@ -478,6 +518,7 @@ fn system_checks(checks: &[super::checks::Check]) -> ModelRc<c::SystemCheck> {
         .map(|ch| c::SystemCheck {
             title: text(ch.title),
             ok: ch.ok,
+            pending: ch.pending,
             detail: text(&ch.detail),
         })
         .collect();

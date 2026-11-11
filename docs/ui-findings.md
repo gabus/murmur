@@ -36,7 +36,14 @@ list with key events (Down, Up, Return, Escape) and checks which model is picked
 - `slint::set_xdg_app_id` fails until the platform exists. Create the component first, and
   call it before `show()`.
 - A fixed-size window that fits its content: bind `min-height`/`max-height` to the layout's
-  `preferred-height`. The winit backend resizes the window when the constraints change.
+  `preferred-height`. The winit backend resizes the window when the constraints change, **but
+  not if they change while the compositor is still configuring the new window**: the window
+  keeps its first height and the bottom is cut off. Seen on the maintainer's KDE session
+  (Settings opened, the system check answered within milliseconds), reproduced in nested KWin
+  6.8 (`tests/ui_nested_kwin.rs`, 2026-11-11). Fix in `window.rs`: after every state, and from
+  a `changed height` callback whenever the compositor sets a size, request the content's size
+  again. The checklist also shows its lines (pending) while the check runs, so the window opens
+  at its final size and doesn't grow downward off a short screen.
 - Popups (combo box lists, the model list) are drawn inside the window on Wayland, so they must
   fit in it. The model list opens above its button when there's no room below.
 - The Fluent widgets' SVG icons (check box tick, combo box arrow) need `i-slint-core/svg`. The
