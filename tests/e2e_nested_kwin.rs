@@ -126,7 +126,7 @@ async fn dictation_end_to_end() {
     );
 }
 
-const IDLE_ICON: &str = "audio-input-microphone-symbolic";
+const IDLE_ICON: &str = "io.github.gabus.Murmur-symbolic";
 
 async fn sni_name(conn: &zbus::Connection) -> String {
     let dbus = zbus::fdo::DBusProxy::new(conn).await.expect("dbus proxy");
