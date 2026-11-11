@@ -100,6 +100,20 @@ unset, so no portals, no tray host and nothing can be typed):
 
 Not tested: aarch64, the CI workflow (written, not run), GNOME.
 
+## GitHub Actions (first runs, 2026-11-11)
+
+- **Disk.** A GitHub runner has about 14 GB free. With the SDK's default `-g`, ONNX Runtime's
+  objects filled it ("No space left on device" in `cast_op.cc.o`, 44 min in). Both C++ modules
+  now build with `-g0` and `no-debuginfo` (the SDK's hardening flags stay). A local cold build
+  then peaks at about 2.5 GB above the flatpak-builder cache.
+- **rofiles-fuse.** FUSE doesn't work in the job container: `Error: Failure spawning
+  rofiles-fuse` right after the sources are downloaded. `release.yml` passes
+  `--disable-rofiles-fuse`, as the official flatpak-builder action does. Reproduced and
+  verified by running the workflow's steps in the same image locally (podman,
+  `ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-26.08`, throwaway signing key).
+- `Can't find bus: Cannot spawn a message bus without a machine-id` in the container is only a
+  warning.
+
 ## Store data: why the remote must be a normal one
 
 Discover and GNOME Software take an app's description, license and branding from the

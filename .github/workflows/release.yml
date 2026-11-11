@@ -45,7 +45,9 @@ jobs:
       - name: Build into a signed repo (offline, sandboxed)
         run: |
           flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-          flatpak-builder --user --install-deps-from=flathub --sandbox --force-clean --ccache \
+          # No --ccache: it keeps a second copy of every object, and the runner's disk is small.
+          # --disable-rofiles-fuse: FUSE doesn't work in the job container (the official action does the same).
+          flatpak-builder --user --install-deps-from=flathub --sandbox --force-clean --disable-rofiles-fuse \
             --default-branch="$BRANCH" --gpg-sign="$KEY_ID" --repo=repo \
             build-dir io.github.gabus.Murmur.yml
           flatpak build-update-repo --gpg-sign="$KEY_ID" --generate-static-deltas --prune repo

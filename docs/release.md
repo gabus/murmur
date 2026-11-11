@@ -41,8 +41,10 @@ do them (D-004: Claude never pushes).
    `murmur.flatpakref` and `murmur.flatpakrepo`.
 5. Check it on a clean user: `flatpak install --user https://gabus.github.io/murmur/murmur.flatpakref`.
 
-**Status:** the workflow has not run yet (it was written without GitHub access). Expect to fix
-small things on the first tag.
+**Status:** the first tag (2026-11-11) failed on two CI-only problems: runner disk space and
+rofiles-fuse ([packaging.md](packaging.md) → GitHub Actions). Both are fixed, and the build job
+was rehearsed locally in the same container image. To retry a release whose run failed before
+anything was published, move the tag: `git tag -f v0.1.0 && git push --force origin v0.1.0`.
 
 ## Flathub (later, optional)
 

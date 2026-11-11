@@ -15,6 +15,13 @@ name: onnxruntime
 buildsystem: cmake-ninja
 subdir: cmake
 builddir: true
+# No debug info (-g0 overrides the SDK's -g): with it, ONNX Runtime's objects alone filled a
+# GitHub runner's ~14 GB disk ("No space left on device", 2026-11-11). Nothing uses it; the
+# SDK's hardening flags stay.
+no-debuginfo: true
+build-options:
+  cflags: -g0
+  cxxflags: -g0
 config-opts:
   # GCC 16 (SDK 26.08) adds warnings ORT treats as errors (COMPILE_WARNING_AS_ERROR).
   - --compile-no-warning-as-error

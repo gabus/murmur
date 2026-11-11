@@ -9,7 +9,11 @@
 name: sherpa-onnx
 buildsystem: cmake-ninja
 builddir: true
+# No debug info, like flatpak/onnxruntime.yml (runner disk space).
+no-debuginfo: true
 build-options:
+  cflags: -g0
+  cxxflags: -g0
   env:
     # Use the ONNX Runtime built in the previous module (cmake/onnxruntime.cmake).
     SHERPA_ONNXRUNTIME_INCLUDE_DIR: /app/include/onnxruntime
