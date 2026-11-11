@@ -14,3 +14,11 @@ rustix = { version = "1", features = ["time"] }
 slint = { version = "1.18", default-features = false, features = ["std", "compat-1-2", "renderer-software", "accessibility", "backend-winit-wayland"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal", "fs"] }
 xkbcommon = "0.9"
+
+# Keep target/ small: full debug info for every dependency grew it past 30 GB. Backtraces
+# still show file and line for our own code.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

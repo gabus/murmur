@@ -48,3 +48,11 @@ sherpa-static = ["sherpa-onnx/static"]
 sherpa-shared = ["sherpa-onnx/shared"]
 # Test-only hooks: WAV instead of mic, direct KWin EIS, autorun. Never shipped.
 dev-harness = ["dep:hound"]
+
+# Keep target/ small: full debug info for every dependency grew it past 30 GB. Backtraces
+# still show file and line for our own code.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
