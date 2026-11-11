@@ -54,6 +54,36 @@ pub struct UiState {
     pub autostart: bool,
     /// Why autostart couldn't be changed, if it failed.
     pub autostart_error: Option<String>,
+    /// What the system provides (Settings → Your system); None until checked.
+    #[serde(default)]
+    pub system: Option<SystemReport>,
+}
+
+/// Facts about the host that Murmur depends on (README → Supported desktops), probed when a
+/// window opens. The UI turns them into the "Your system" checklist (D-019).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct SystemReport {
+    /// `WAYLAND_DISPLAY` names a socket that exists.
+    pub wayland: bool,
+    /// `XDG_CURRENT_DESKTOP`, e.g. `KDE` or `ubuntu:GNOME`; empty when unset.
+    pub desktop: String,
+    /// `KDE_SESSION_VERSION` (Plasma's major version), when set.
+    pub kde_version: Option<u32>,
+    /// xdg-desktop-portal answered on the session bus.
+    pub portal: bool,
+    /// Portal interface versions; None when the portal doesn't offer the interface.
+    pub global_shortcuts: Option<u32>,
+    pub remote_desktop: Option<u32>,
+    /// The RemoteDesktop portal offers a keyboard (`AvailableDeviceTypes`).
+    #[serde(default)]
+    pub remote_desktop_keyboard: bool,
+    pub clipboard: Option<u32>,
+    /// A PipeWire or PulseAudio server accepted a connection.
+    pub audio_server: bool,
+    /// Microphones the audio server offers (monitors of outputs excluded).
+    pub microphones: usize,
+    /// A tray host (`org.kde.StatusNotifierWatcher`) is running.
+    pub tray: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

@@ -455,7 +455,33 @@ impl Page for SettingsWindow {
             self.set_autostart(v.autostart);
             self.set_autostart_error(text(&v.autostart_error));
         }
+        if changed(prev.map(|p| &p.system), &v.system) {
+            match &v.system {
+                None => self.set_checks_ready(false),
+                Some(s) => {
+                    // Two columns: base system on the left, desktop features on the right.
+                    let (left, right) = s.checks.split_at(s.checks.len().div_ceil(2));
+                    self.set_checks_left(system_checks(left));
+                    self.set_checks_right(system_checks(right));
+                    self.set_checks_summary(text(&s.summary));
+                    self.set_checks_all_ok(s.all_ok);
+                    self.set_checks_ready(true);
+                }
+            }
+        }
     }
+}
+
+fn system_checks(checks: &[super::checks::Check]) -> ModelRc<c::SystemCheck> {
+    let items: Vec<c::SystemCheck> = checks
+        .iter()
+        .map(|ch| c::SystemCheck {
+            title: text(ch.title),
+            ok: ch.ok,
+            detail: text(&ch.detail),
+        })
+        .collect();
+    ModelRc::new(VecModel::from(items))
 }
 
 fn wire_settings(ui: &SettingsWindow, shown: &Shown<SettingsView>, out: &Outbox) {

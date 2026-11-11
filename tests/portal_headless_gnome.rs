@@ -122,6 +122,22 @@ async fn portal_gnome_scenarios() {
             .is_some_and(|v| v >= 1),
         "no Clipboard portal"
     );
+    // Settings → Your system (D-019) sees the same, and no tray host (no AppIndicator).
+    let report = murmur::syscheck::probe().await;
+    eprintln!("system check: {report:?}");
+    assert!(
+        report.wayland && report.portal && murmur::portal::is_gnome(Some(&report.desktop)),
+        "{report:?}"
+    );
+    assert_eq!(
+        (report.global_shortcuts, report.remote_desktop),
+        (Some(1), Some(2)),
+        "{report:?}"
+    );
+    assert!(
+        report.remote_desktop_keyboard && report.clipboard.is_some() && !report.tray,
+        "{report:?}"
+    );
     wait_for("no screen sharing", WAIT, || async {
         gnome::sharing_sessions(bus).await == 0
     })

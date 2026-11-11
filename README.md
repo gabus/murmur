@@ -78,7 +78,12 @@ A one-time setup window, all on one page ([D-009](docs/decisions.md)):
 
 After setup the window closes, and murmur lives only in the tray. **Settings…** in the tray
 menu opens a small window with the same look: shortcut, microphone, model, the pause that ends
-a sentence, idle unload time and start at login ([D-010](docs/decisions.md)).
+a sentence, idle unload time and start at login ([D-010](docs/decisions.md)). Below them,
+**Your system** checks what the distro must provide and shows a green tick or a red cross with
+the reason for each: Wayland session, Plasma 6.1+ or GNOME 48+, desktop portal, PipeWire or
+PulseAudio, global shortcut, typing, clipboard and tray icon. It's checked every time the window
+opens, read-only (no dialogs) ([D-019](docs/decisions.md)). `murmur --check` prints the same
+list in a terminal ([D-020](docs/decisions.md)).
 
 #### Dictating
 
@@ -226,7 +231,7 @@ process (`murmur --ui …`), so the daemon never loads a GUI toolkit while idle.
 
 ```
 src/
-  main.rs          # startup, wiring; `--ui` runs the window process
+  main.rs          # startup, wiring; `--ui` runs the window process, `--check` the system check
   app.rs           # state machine Idle ⇄ Listening; window state and requests
   instance.rs      # single instance (D-Bus name), Activate/Toggle methods
   hotkey.rs        # GlobalShortcuts portal (bind, change, activations)
@@ -243,8 +248,10 @@ src/
   tray.rs, icons.rs# StatusNotifierItem tray, drawn state icons
   notify.rs        # error notifications (Notification portal)
   autostart.rs     # Background portal
+  syscheck.rs      # probes what the host provides (Settings → Your system)
   config.rs        # $XDG_CONFIG_HOME/murmur/config.toml
-  ui/              # Slint windows (setup, settings) + daemon↔UI protocol
+  ui/              # Slint windows (setup, settings) + daemon↔UI protocol; checks.rs
+                   #   turns the system probe into the Your system checklist
   ui_host.rs       # spawns and drives the window process
 ```
 
@@ -294,6 +301,7 @@ $T cargo test --features dev-harness --test e2e_nested_kwin -- --ignored   # nee
 # dev tools
 $T cargo run --release --example simulate -- --model parakeet-v3 file.wav   # engine on WAVs
 $T cargo run --example ui_shots -- /tmp/shots                                # window screenshots
+$T cargo run -- --check     # what this system provides (also: flatpak run io.github.gabus.Murmur --check)
 
 # after every Cargo.lock change: refresh the vendored crate list for the Flatpak
 $T flatpak/update-cargo-sources.sh

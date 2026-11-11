@@ -177,16 +177,28 @@ struct Shared {
 /// PulseAudio (lists real microphones by name), else whatever cpal defaults to.
 /// Logs why PulseAudio isn't used, once.
 fn host() -> cpal::Host {
+    cpal::host_from_id(host_id()).unwrap_or_else(|_| cpal::default_host())
+}
+
+fn host_id() -> cpal::HostId {
     // Decided once: each failed PulseAudio attempt can take seconds.
     static CHOSEN: std::sync::OnceLock<cpal::HostId> = std::sync::OnceLock::new();
-    let id = *CHOSEN.get_or_init(|| match cpal::host_from_id(cpal::HostId::PulseAudio) {
+    *CHOSEN.get_or_init(|| match cpal::host_from_id(cpal::HostId::PulseAudio) {
         Ok(_) => cpal::HostId::PulseAudio,
         Err(e) => {
             warn!(error = %e, "PulseAudio unavailable, using ALSA");
             cpal::HostId::Alsa
         }
-    });
-    cpal::host_from_id(id).unwrap_or_else(|_| cpal::default_host())
+    })
+}
+
+/// Connects to PipeWire/PulseAudio afresh and lists its microphones; None when no server
+/// answers (blocking). Unlike the host picked at startup this isn't cached, so the system
+/// check sees a server that started later.
+pub fn probe_server() -> Option<Vec<Mic>> {
+    cpal::host_from_id(cpal::HostId::PulseAudio)
+        .ok()
+        .map(|h| list_microphones(&h))
 }
 
 /// A microphone: a stable id for the config and a label for people.
@@ -200,7 +212,10 @@ pub struct Mic {
 /// The available microphones (blocking; call off the async runtime).
 /// Duplicate labels get a numeric suffix so they stay distinguishable.
 pub fn microphones() -> Vec<Mic> {
-    let host = host();
+    list_microphones(&host())
+}
+
+fn list_microphones(host: &cpal::Host) -> Vec<Mic> {
     let Ok(devices) = host.input_devices() else {
         return Vec::new();
     };

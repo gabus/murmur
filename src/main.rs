@@ -16,11 +16,15 @@ use tracing_subscriber::EnvFilter;
 fn main() -> Result<()> {
     // UI child process. Before the tracing init: stdout is its protocol pipe.
     let mut args = std::env::args_os().skip(1);
-    if args.next().is_some_and(|a| a == "--ui") {
-        let window = args
-            .next()
-            .and_then(|a| a.to_str().and_then(murmur::ui::protocol::Window::from_arg));
-        return murmur::ui::run(window.context("usage: murmur --ui setup|settings")?);
+    match args.next() {
+        Some(a) if a == "--ui" => {
+            let window = args
+                .next()
+                .and_then(|a| a.to_str().and_then(murmur::ui::protocol::Window::from_arg));
+            return murmur::ui::run(window.context("usage: murmur --ui setup|settings")?);
+        }
+        Some(a) if a == "--check" => return check(),
+        _ => {}
     }
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
@@ -33,6 +37,29 @@ fn main() -> Result<()> {
         .enable_all()
         .build()?;
     rt.block_on(run())
+}
+
+/// `murmur --check`: prints Settings → Your system (D-019) and exits non-zero on a problem.
+/// Read-only, and independent of a running Murmur.
+fn check() -> Result<()> {
+    use murmur::ui::{checks, protocol::TypingState};
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let report = rt.block_on(murmur::syscheck::probe());
+    let list = checks::list(&report, &TypingState::Unknown);
+    for c in &list {
+        println!("{} {}", if c.ok { "✓" } else { "✗" }, c.title);
+        if !c.detail.is_empty() {
+            println!("    {}", c.detail);
+        }
+    }
+    println!("{}", checks::summary(&list));
+    if list.iter().all(|c| c.ok) {
+        Ok(())
+    } else {
+        std::process::exit(1)
+    }
 }
 
 async fn run() -> Result<()> {

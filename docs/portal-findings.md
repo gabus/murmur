@@ -327,6 +327,19 @@ a second EIS client. `spectacle -b -n -f -o` on the nested bus and display takes
     **Fix:** the manifest ships a 256-byte zero cookie and sets `PULSE_COOKIE`. Tested in the
     Flatpak: `host=PulseAudio device=ArctisX PnP Microphone Mono`.
 
+## System check (Settings → Your system, D-019; tested 2026-11-11)
+
+What the read-only probe (`src/syscheck.rs`, `murmur --check`) sees:
+
+| Where | Wayland | Desktop | Portal | GlobalShortcuts | RemoteDesktop (keyboard) | Clipboard | Audio | Tray |
+|---|---|---|---|---|---|---|---|---|
+| KDE Plasma 6.8.2 real session, toolbox `cargo run -- --check` | ✅ | KDE 6 | ✅ | ✅ | ✅ | ✅ | ✅ PipeWire 1.6.11 | ✅ |
+| Same session, inside the Flatpak (`flatpak run io.github.gabus.Murmur --check`) | ✅ | KDE 6 | ✅ | ✅ | ✅ | ✅ | ✅ (via `PULSE_COOKIE`) | ✅ (`--talk-name`) |
+| Headless GNOME 50.6 + portal-gnome 50.0 (`tests/portal_headless_gnome.rs`) | ✅ | GNOME | ✅ | v1 | v2 (keyboard ✅) | v1 | n/a (isolated) | ❌ no AppIndicator, as expected |
+
+Only Plasma's major version (`KDE_SESSION_VERSION`) reaches the sandbox, so Plasma 6.0 can't be
+told apart from 6.1+ before typing is tried.
+
 ## Go / no-go
 
 **Go**, with **RemoteDesktop portal → ConnectToEIS → keymap-aware key events** as the typing

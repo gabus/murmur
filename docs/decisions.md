@@ -175,3 +175,27 @@ supported yet"**, so people can see before installing whether Murmur works on th
   has them.
 - When a desktop or architecture changes status in README → Supported desktops, update
   `data/io.github.gabus.Murmur.metainfo.xml` in the same change.
+
+### D-019 · 2026-11-10 · maintainer
+**Settings has a "Your system" checklist of what the distro must provide**: each item with a
+green tick, or a red cross and the reason, so it's clear what isn't working when something is
+missing.
+- Items: Wayland session, Plasma 6.1+ or GNOME 48+, desktop portal, PipeWire or PulseAudio,
+  global shortcut, typing, clipboard, tray icon. These are D-018's list, with the portal split
+  by feature so a cross names what stops working. x86_64 is left out: if Murmur runs, it's met.
+- Checked read-only each time Settings opens: environment variables, portal interface
+  versions, the RemoteDesktop keyboard, the audio server and the tray watcher on the bus. No
+  dialogs and no permission prompts. Typing also turns red once a real attempt fails or is
+  denied.
+- Limit: inside the sandbox only Plasma's major version is visible. Plasma 6.0 (no EIS) passes
+  until the first typing attempt fails. GNOME before 48 shows through its missing
+  GlobalShortcuts portal.
+- Spec: README → First run (Settings).
+
+### D-020 · 2026-11-11 · Claude (D-019 support; maintainer informed)
+**`murmur --check` prints the D-019 checklist in a terminal** and exits with code 1 when
+something is missing.
+- Why: it tests the probe inside the Flatpak against the real desktop without opening a window,
+  and users can paste its output into bug reports. It's read-only and doesn't touch a running
+  Murmur. Drop it if the maintainer objects.
+- Spec: README → Development.

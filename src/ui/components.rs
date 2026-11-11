@@ -13,6 +13,13 @@ slint::slint! {
 
     export enum RowStatus { todo, busy, done, failed }
 
+    // One line of Settings → Your system (D-019).
+    export struct SystemCheck {
+        title: string,
+        ok: bool,
+        detail: string,
+    }
+
     export struct ModelChoice {
         id: string,
         name: string,
@@ -86,6 +93,62 @@ slint::slint! {
             height: parent.height - 2px;
             indeterminate: root.progress < 0;
             progress: max(root.progress, 0);
+        }
+    }
+
+    // Green tick or red cross for the system checklist.
+    component CheckMark inherits Rectangle {
+        in property <bool> ok;
+        width: 18px;
+        height: 18px;
+        border-radius: 9px;
+        background: root.ok ? Theme.success : Theme.danger;
+        accessible-role: text;
+        accessible-label: root.ok ? "OK" : "Missing";
+        if root.ok: Path {
+            width: 100%;
+            height: 100%;
+            viewbox-width: 18;
+            viewbox-height: 18;
+            commands: "M 5.2 9.4 L 7.9 12.1 L 12.9 6.6";
+            stroke: Theme.on-status;
+            stroke-width: 2px;
+            fill: transparent;
+        }
+        if !root.ok: Path {
+            width: 100%;
+            height: 100%;
+            viewbox-width: 18;
+            viewbox-height: 18;
+            commands: "M 6.2 6.2 L 11.8 11.8 M 11.8 6.2 L 6.2 11.8";
+            stroke: Theme.on-status;
+            stroke-width: 2px;
+            fill: transparent;
+        }
+    }
+
+    component CheckItem inherits HorizontalLayout {
+        in property <SystemCheck> check;
+        spacing: 8px;
+        VerticalLayout {
+            alignment: start;
+            padding-top: 1px;
+            CheckMark { ok: root.check.ok; }
+        }
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: 2px;
+            Text {
+                text: root.check.title;
+                color: Palette.foreground;
+                wrap: word-wrap;
+            }
+            if root.check.detail != "": Text {
+                text: root.check.detail;
+                font-size: Theme.small-size;
+                color: Theme.danger;
+                wrap: word-wrap;
+            }
         }
     }
 
@@ -509,6 +572,12 @@ slint::slint! {
         in-out property <bool> autostart;
         in property <string> autostart-error;
 
+        in property <bool> checks-ready;
+        in property <[SystemCheck]> checks-left;
+        in property <[SystemCheck]> checks-right;
+        in property <string> checks-summary;
+        in property <bool> checks-all-ok;
+
         out property <length> content-height: main.preferred-height;
 
         // "0.8 s": tenths, so 1.0 doesn't print as "1".
@@ -648,6 +717,51 @@ slint::slint! {
                             color: Theme.danger;
                             wrap: word-wrap;
                         }
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: "Your system";
+                    font-size: 16px;
+                    font-weight: 600;
+                    color: Palette.foreground;
+                    horizontal-stretch: 1;
+                    vertical-alignment: center;
+                }
+                if root.checks-ready: Text {
+                    text: root.checks-summary;
+                    font-size: Theme.small-size;
+                    font-weight: 600;
+                    color: root.checks-all-ok ? Theme.success : Theme.danger;
+                    vertical-alignment: center;
+                }
+            }
+
+            Card {
+                if !root.checks-ready: Row {
+                    Text {
+                        text: "Checking…";
+                        color: Theme.muted;
+                    }
+                }
+                if root.checks-ready: HorizontalLayout {
+                    padding: 14px;
+                    spacing: 16px;
+                    // Fixed columns: the window is 520 px wide.
+                    VerticalLayout {
+                        width: 213px;
+                        alignment: start;
+                        spacing: 10px;
+                        for check in root.checks-left: CheckItem { check: check; }
+                    }
+                    VerticalLayout {
+                        width: 213px;
+                        alignment: start;
+                        spacing: 10px;
+                        for check in root.checks-right: CheckItem { check: check; }
                     }
                 }
             }

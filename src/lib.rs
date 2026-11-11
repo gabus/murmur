@@ -18,6 +18,7 @@ pub mod notify;
 pub mod output;
 pub mod paths;
 pub mod portal;
+pub mod syscheck;
 pub mod tray;
 pub mod ui;
 pub mod ui_host;

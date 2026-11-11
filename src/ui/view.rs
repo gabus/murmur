@@ -3,7 +3,10 @@
 //! Everything here is plain data so it can be unit-tested without a display. `window.rs`
 //! copies these values into the Slint components.
 
-use super::protocol::{DownloadRow, ModelRow, ShortcutState, TypingState, UiState};
+use super::{
+    checks::{self, Check},
+    protocol::{DownloadRow, ModelRow, ShortcutState, TypingState, UiState},
+};
 
 /// Lower and upper bound of the "sentence ends after a pause" setting, in seconds.
 pub const PAUSE_MIN: f32 = 0.4;
@@ -407,6 +410,26 @@ pub struct SettingsView {
     pub idle_index: usize,
     pub autostart: bool,
     pub autostart_error: String,
+    /// The "Your system" checklist (D-019); None while it's being checked.
+    pub system: Option<SystemView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SystemView {
+    pub checks: Vec<Check>,
+    /// "All good" or "2 problems".
+    pub summary: String,
+    pub all_ok: bool,
+}
+
+fn system(state: &UiState) -> Option<SystemView> {
+    let report = state.system.as_ref()?;
+    let checks = checks::list(report, &state.typing);
+    Some(SystemView {
+        summary: checks::summary(&checks),
+        all_ok: checks.iter().all(|c| c.ok),
+        checks,
+    })
 }
 
 impl SettingsView {
@@ -509,6 +532,7 @@ pub fn settings(state: &UiState) -> SettingsView {
         idle_index,
         autostart: state.autostart,
         autostart_error: state.autostart_error.clone().unwrap_or_default(),
+        system: system(state),
     }
 }
 

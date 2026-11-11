@@ -379,28 +379,17 @@ fn portal_error(e: ashpd::Error) -> SourceError {
 /// Reads the RemoteDesktop portal's `version` property directly, to tell "too old" apart from
 /// "couldn't ask".
 async fn read_portal_version() -> Result<u32, SourceError> {
-    let failed = |e: zbus::Error| match &e {
-        zbus::Error::MethodError(name, ..)
-            if name.as_str() == "org.freedesktop.DBus.Error.ServiceUnknown"
-                || name.as_str() == "org.freedesktop.DBus.Error.InvalidArgs"
-                || name.as_str() == "org.freedesktop.DBus.Error.UnknownInterface" =>
-        {
+    let failed = |e: zbus::Error| {
+        if crate::portal::is_missing(&e) {
             SourceError::Unavailable(format!("no RemoteDesktop portal on this desktop ({e})"))
+        } else {
+            SourceError::Failed(format!("cannot read the RemoteDesktop portal version: {e}"))
         }
-        _ => SourceError::Failed(format!("cannot read the RemoteDesktop portal version: {e}")),
     };
     let bus = zbus::Connection::session().await.map_err(failed)?;
-    let reply = bus
-        .call_method(
-            Some("org.freedesktop.portal.Desktop"),
-            "/org/freedesktop/portal/desktop",
-            Some("org.freedesktop.DBus.Properties"),
-            "Get",
-            &("org.freedesktop.portal.RemoteDesktop", "version"),
-        )
+    let value = crate::portal::property(&bus, "org.freedesktop.portal.RemoteDesktop", "version")
         .await
         .map_err(failed)?;
-    let value: zbus::OwnedVariant = reply.body().deserialize().map_err(failed)?;
     u32::try_from(value).map_err(|e| {
         SourceError::Failed(format!(
             "the RemoteDesktop portal version is not a number: {e}"

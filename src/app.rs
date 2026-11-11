@@ -18,7 +18,9 @@ use crate::{
     models::{self, MODELS},
     notify::Notifier,
     output::{Output, OutputEvent},
-    ui::protocol::{DownloadRow, FromUi, ModelRow, ShortcutState, TypingState, UiState, Window},
+    ui::protocol::{
+        DownloadRow, FromUi, ModelRow, ShortcutState, SystemReport, TypingState, UiState, Window,
+    },
     ui_host::{Generation, UiEvent, UiHost},
 };
 
@@ -78,6 +80,8 @@ enum State {
 /// Results of background work started by the app.
 enum Internal {
     Microphones(Vec<Mic>),
+    /// A system check for the window of this generation.
+    System(Generation, SystemReport),
     Autostart {
         requested: bool,
         result: Result<bool, String>,
@@ -139,6 +143,8 @@ pub struct App {
     microphones: Vec<Mic>,
     autostart_error: Option<String>,
     models_view: ModelsView,
+    /// Settings → Your system; probed whenever a window opens.
+    system: Option<SystemReport>,
 }
 
 impl App {
@@ -182,6 +188,7 @@ impl App {
             microphones: Vec::new(),
             autostart_error: None,
             models_view,
+            system: None,
         }
     }
 
@@ -580,13 +587,31 @@ impl App {
                 return;
             }
         }
-        // Microphone names are slow to list; fill them in when ready.
+        // Microphone names are slow to list; fill them in when ready. Settings checks the
+        // system on every open (the user may have just fixed something), which lists them too.
         let tx = self.internal_tx.clone();
-        tokio::spawn(async move {
-            if let Ok(mics) = tokio::task::spawn_blocking(audio::microphones).await {
-                let _ = tx.send(Internal::Microphones(mics));
-            }
-        });
+        if window == Window::Settings {
+            self.system = None;
+            let generation = self.ui_generation;
+            tokio::spawn(async move {
+                let (report, mics) = crate::syscheck::probe_with_microphones().await;
+                let mics = match mics {
+                    Some(m) => Some(m),
+                    // No PipeWire/PulseAudio now: list what the capture host sees.
+                    None => tokio::task::spawn_blocking(audio::microphones).await.ok(),
+                };
+                if let Some(m) = mics {
+                    let _ = tx.send(Internal::Microphones(m));
+                }
+                let _ = tx.send(Internal::System(generation, report));
+            });
+        } else {
+            tokio::spawn(async move {
+                if let Ok(mics) = tokio::task::spawn_blocking(audio::microphones).await {
+                    let _ = tx.send(Internal::Microphones(mics));
+                }
+            });
+        }
     }
 
     fn on_ui(&mut self, ev: UiEvent) {
@@ -685,6 +710,13 @@ impl App {
     fn on_internal(&mut self, r: Internal) {
         match r {
             Internal::Microphones(m) => self.microphones = m,
+            Internal::System(generation, r) => {
+                debug!(report = ?r, "system check");
+                // A slower check from an earlier window mustn't replace the current one.
+                if generation == self.ui_generation {
+                    self.system = Some(r);
+                }
+            }
             Internal::Autostart {
                 requested,
                 result: Ok(on),
@@ -751,6 +783,7 @@ impl App {
             idle_minutes: cfg.idle_unload_minutes,
             autostart: cfg.autostart,
             autostart_error: self.autostart_error.clone(),
+            system: self.system.clone(),
         }
     }
 

@@ -1,6 +1,6 @@
 //! Sample states for the screenshot example (`examples/ui_shots.rs`) and the tests.
 
-use super::protocol::{DownloadRow, ModelRow, ShortcutState, TypingState, UiState};
+use super::protocol::{DownloadRow, ModelRow, ShortcutState, SystemReport, TypingState, UiState};
 
 fn row(id: &str, name: &str, summary: &str, size: &str) -> ModelRow {
     ModelRow {
@@ -68,6 +68,24 @@ pub fn setup_fresh() -> UiState {
         idle_minutes: 10,
         autostart: false,
         autostart_error: None,
+        system: None,
+    }
+}
+
+/// A Plasma 6 desktop that has everything (Settings → Your system).
+pub fn system_ok() -> SystemReport {
+    SystemReport {
+        wayland: true,
+        desktop: "KDE".into(),
+        kde_version: Some(6),
+        portal: true,
+        global_shortcuts: Some(2),
+        remote_desktop: Some(2),
+        remote_desktop_keyboard: true,
+        clipboard: Some(1),
+        audio_server: true,
+        microphones: 2,
+        tray: true,
     }
 }
 
@@ -138,14 +156,23 @@ pub fn settings() -> UiState {
         unpacking: false,
         error: None,
     });
+    s.system = Some(system_ok());
     s
 }
 
-/// Settings with no download and a failed autostart change.
+/// Settings with no download and a failed autostart change, on GNOME without the
+/// AppIndicator extension.
 pub fn settings_idle() -> UiState {
     let mut s = settings();
     s.download = None;
     s.autostart = true;
     s.autostart_error = Some("The Background portal refused the request.".into());
+    s.system = Some(SystemReport {
+        desktop: "GNOME".into(),
+        kde_version: None,
+        global_shortcuts: Some(1),
+        tray: false,
+        ..system_ok()
+    });
     s
 }

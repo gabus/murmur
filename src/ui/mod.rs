@@ -2,6 +2,7 @@
 //! (`murmur --ui setup|settings`) so the daemon never loads a GUI toolkit
 //! while idle; see `protocol` for the pipe protocol.
 
+pub mod checks;
 mod components;
 pub mod offscreen;
 pub mod protocol;
