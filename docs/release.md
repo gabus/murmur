@@ -30,16 +30,18 @@ do them (D-004: Claude never pushes).
 
 ## Each release
 
-1. Update the version in `Cargo.toml` and add a `<release>` entry in
-   `data/io.github.gabus.Murmur.metainfo.xml`, then commit.
+1. Update the version in `Cargo.toml` and add a `<release>` entry (version, date,
+   `type="stable"`, a few lines of notes: Discover and GNOME Software show them) at the top of
+   `<releases>` in `data/io.github.gabus.Murmur.metainfo.xml`, then commit.
 2. If `Cargo.lock` changed since the last release, run `flatpak/update-cargo-sources.sh`
    first (README → Build & run).
-3. Tag and push: `git tag v0.1.0 && git push origin main v0.1.0`.
+3. Tag and push, with the same version: `git tag vX.Y.Z && git push origin main vX.Y.Z`.
 4. The **Release** workflow builds the Flatpak offline (about 10 min cold, faster with its
    cache), signs the repo, publishes `https://gabus.github.io/murmur/` (landing page,
    `murmur.flatpakref`, the repo) and creates the GitHub Release with `murmur.flatpak`,
    `murmur.flatpakref` and `murmur.flatpakrepo`.
 5. Check it on a clean user: `flatpak install --user https://gabus.github.io/murmur/murmur.flatpakref`.
+   Existing users get the update through their store or `flatpak update`.
 
 **Status:** v0.1.0 released 2026-11-11. The first tag failed on two CI-only problems, runner
 disk space and rofiles-fuse ([packaging.md](packaging.md) → GitHub Actions). Both are fixed. To

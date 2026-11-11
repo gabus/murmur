@@ -36,7 +36,7 @@
   </tr>
 </table>
 
-> **Status:** alpha, not released yet. Works on KDE Plasma 6 and GNOME 50.
+> **Status:** alpha, [v0.1.0](https://github.com/gabus/murmur/releases/tag/v0.1.0) released 2026-11-11. Works on KDE Plasma 6 and GNOME 50.
 
 ## Why Murmur
 
@@ -393,7 +393,8 @@ the mic), `MURMUR_DEV_EIS=kwin-direct`, `MURMUR_DEV_NO_HOTKEY` and `MURMUR_DEV_A
 
 The first Flatpak build compiles ONNX Runtime and sherpa-onnx (about 10 minutes on 16 threads);
 flatpak-builder caches them in `.flatpak-builder/`. CI builds the same bundle on every push
-(`.github/workflows/flatpak.yml`). Details and Flathub notes: [docs/packaging.md](docs/packaging.md).
+(`.github/workflows/flatpak.yml`). Details and Flathub notes: [docs/packaging.md](docs/packaging.md). Cutting a release:
+[docs/release.md](docs/release.md).
 
 </details>
 
